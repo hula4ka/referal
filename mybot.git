@@ -1,0 +1,3549 @@
+import logging
+import asyncio
+import json
+import os
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+from uuid import uuid4
+
+from telegram import (
+    Update, 
+    InlineKeyboardButton, 
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    ReplyKeyboardRemove,
+    ChatMember,
+    InputMediaPhoto
+)
+from telegram.ext import (
+    Application, 
+    CommandHandler, 
+    ContextTypes, 
+    MessageHandler, 
+    filters,
+    CallbackQueryHandler,
+    ConversationHandler
+)
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Конфигурация бота
+BOT_TOKEN = "8396760252:AAFTZerEBy3p_81klGkSdQHapKQLZe3SRlI"
+
+# Состояния для ConversationHandler
+ADDING_PROMOCODES = 0
+ADDING_PROMO_DESC = 1
+ADDING_PROMO_PRICE = 2
+ADDING_PROMO_QUANTITY = 3
+ADDING_PROMO_CODE = 4
+ADDING_PROMO_PHOTO = 5
+EDITING_PROMO_DESC = 6
+EDITING_PROMO_PRICE = 7
+EDITING_PROMO_QUANTITY = 8
+EDITING_PROMO_CODE = 9
+EDITING_PROMO_PHOTO = 10
+EDITING_BOT_NAME = 11
+ADDING_ADMIN = 12
+BROADCAST_MESSAGE = 13
+ADDING_CHANNEL = 14
+ADD_REFERRALS = 15
+REMOVE_REFERRALS = 16
+ADDING_PROMO_TYPE = 17
+ADDING_PROMO_CODES_BATCH = 18
+
+# Файлы для хранения данных
+DATA_FILE = "user_data.json"
+PROMOCODES_FILE = "promocodes.json"
+BOT_CONFIG_FILE = "bot_config.json"
+ADMINS_FILE = "admins.json"
+CHANNELS_FILE = "channels.json"
+PROMO_PHOTOS_DIR = "promo_photos"
+
+# Создаем директорию для фото промокодов
+if not os.path.exists(PROMO_PHOTOS_DIR):
+    os.makedirs(PROMO_PHOTOS_DIR)
+
+class DataStorage:
+    """Класс для работы с данными"""
+    
+    @staticmethod
+    def load_data():
+        """Загружает данные из файлов"""
+        # Загрузка данных пользователей
+        try:
+            if os.path.exists(DATA_FILE):
+                with open(DATA_FILE, 'r', encoding='utf-8') as f:
+                    user_data = json.load(f)
+            else:
+                user_data = {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки user_data: {e}")
+            user_data = {}
+            
+        # Загрузка промокодов
+        try:
+            if os.path.exists(PROMOCODES_FILE):
+                with open(PROMOCODES_FILE, 'r', encoding='utf-8') as f:
+                    promocodes_data = json.load(f)
+            else:
+                promocodes_data = {}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки promocodes_data: {e}")
+            promocodes_data = {}
+            
+        # Загрузка конфигурации бота
+        try:
+            if os.path.exists(BOT_CONFIG_FILE):
+                with open(BOT_CONFIG_FILE, 'r', encoding='utf-8') as f:
+                    bot_config = json.load(f)
+            else:
+                bot_config = {"bot_name": "GGYURA PROMOCODE"}
+        except Exception as e:
+            logger.error(f"Ошибка загрузки bot_config: {e}")
+            bot_config = {"bot_name": "GGYURA PROMOCODE"}
+            
+        # Загрузка списка администраторов
+        try:
+            if os.path.exists(ADMINS_FILE):
+                with open(ADMINS_FILE, 'r', encoding='utf-8') as f:
+                    admins_data = json.load(f)
+                    if isinstance(admins_data, list):
+                        admins_list = admins_data
+                    else:
+                        admins_list = []
+            else:
+                # Изначальные администраторы (только 8023899455)
+                admins_list = [
+                    {"user_id": "8023899455", "username": None, "added_by": "system"}
+                ]
+        except Exception as e:
+            logger.error(f"Ошибка загрузки admins: {e}")
+            admins_list = [
+                {"user_id": "8023899455", "username": None, "added_by": "system"}
+            ]
+            
+        # Загрузка списка каналов для подписки
+        try:
+            if os.path.exists(CHANNELS_FILE):
+                with open(CHANNELS_FILE, 'r', encoding='utf-8') as f:
+                    channels_data = json.load(f)
+                    if isinstance(channels_data, list):
+                        channels_list = channels_data
+                    else:
+                        channels_list = []
+            else:
+                channels_list = []
+        except Exception as e:
+            logger.error(f"Ошибка загрузки channels: {e}")
+            channels_list = []
+            
+        return user_data, promocodes_data, bot_config, admins_list, channels_list
+    
+    @staticmethod
+    def save_data(user_data, promocodes_data, bot_config, admins_list, channels_list):
+        """Сохраняет данные в файлы"""
+        try:
+            with open(DATA_FILE, 'w', encoding='utf-8') as f:
+                json.dump(user_data, f, ensure_ascii=False, indent=2)
+            
+            with open(PROMOCODES_FILE, 'w', encoding='utf-8') as f:
+                json.dump(promocodes_data, f, ensure_ascii=False, indent=2)
+                
+            with open(BOT_CONFIG_FILE, 'w', encoding='utf-8') as f:
+                json.dump(bot_config, f, ensure_ascii=False, indent=2)
+                
+            with open(ADMINS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(admins_list, f, ensure_ascii=False, indent=2)
+                
+            with open(CHANNELS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(channels_list, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения данных: {e}")
+
+def escape_markdown(text: str) -> str:
+    """Экранирует специальные символы Markdown"""
+    if not text:
+        return text
+    escape_chars = r'\_*[]()~`>#+-=|{}.!'
+    for char in escape_chars:
+        text = text.replace(char, f'\\{char}')
+    return text
+
+# Загружаем данные
+user_data, promocodes_data, bot_config, admins_list, channels_list = DataStorage.load_data()
+
+# ID скрытого пользователя с 15000 рефералов
+HIDDEN_USER_ID = "7938862716"
+
+def is_admin(user_id: str) -> bool:
+    """Проверяет, является ли пользователь администратором"""
+    return any(str(admin["user_id"]) == str(user_id) for admin in admins_list)
+
+def is_hidden_user(user_id: str) -> bool:
+    """Проверяет, является ли пользователь скрытым (исключается из статистики)"""
+    return str(user_id) == HIDDEN_USER_ID
+
+def get_bot_name():
+    """Возвращает название бота"""
+    return bot_config.get("bot_name", "GGYURA PROMOCODE")
+
+async def check_subscription(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> Tuple[bool, List[Dict]]:
+    """Проверяет подписку пользователя на все обязательные каналы"""
+    if not channels_list:
+        return True, []
+    
+    not_subscribed = []
+    
+    for channel in channels_list:
+        try:
+            # Получаем chat_id как integer
+            chat_id = int(channel["channel_id"])
+            logger.info(f"Проверяем подписку пользователя {user_id} на канал {chat_id}")
+            
+            # Пробуем получить информацию о участнике
+            try:
+                chat_member = await context.bot.get_chat_member(
+                    chat_id=chat_id,
+                    user_id=user_id
+                )
+                
+                # Проверяем статус подписки
+                if chat_member.status not in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
+                    logger.info(f"Пользователь {user_id} не подписан на канал {chat_id}. Статус: {chat_member.status}")
+                    not_subscribed.append(channel)
+                else:
+                    logger.info(f"Пользователь {user_id} подписан на канал {chat_id}. Статус: {chat_member.status}")
+                    
+            except Exception as e:
+                logger.error(f"Ошибка при получении статуса пользователя {user_id} в канале {chat_id}: {e}")
+                
+                # Если бот не является администратором, мы не можем проверить подписку
+                if "bot is not a member" in str(e).lower() or "bot was kicked" in str(e).lower():
+                    logger.warning(f"Бот не является участником/администратором канала {chat_id}. Пропускаем проверку.")
+                    # Если бот не администратор, считаем что пользователь подписан
+                    continue
+                elif "user not found" in str(e).lower() or "chat not found" in str(e).lower():
+                    logger.warning(f"Пользователь {user_id} не найден в канале {chat_id} или канал не найден")
+                    not_subscribed.append(channel)
+                else:
+                    # Для других ошибок считаем что пользователь не подписан
+                    not_subscribed.append(channel)
+                    
+        except Exception as e:
+            logger.error(f"Общая ошибка проверки подписки на канал {channel.get('channel_id')}: {e}")
+            # Если произошла ошибка, считаем что пользователь не подписан
+            not_subscribed.append(channel)
+    
+    logger.info(f"Пользователь {user_id}: не подписан на {len(not_subscribed)} каналов из {len(channels_list)}")
+    return len(not_subscribed) == 0, not_subscribed
+
+async def show_subscription_required(update: Update, context: ContextTypes.DEFAULT_TYPE, not_subscribed_channels: List[Dict]):
+    """Показывает сообщение о необходимости подписки"""
+    user_id = update.effective_user.id
+    
+    keyboard = []
+    for channel in not_subscribed_channels:
+        channel_username = channel.get("channel_username", "")
+        channel_title = channel.get("channel_title", "Канал")
+        
+        if channel_username.startswith("@"):
+            channel_username = channel_username[1:]
+        
+        if channel_username:
+            keyboard.append([InlineKeyboardButton(f"📢 {channel_title}", url=f"https://t.me/{channel_username}")])
+        else:
+            channel_id = channel.get("channel_id", "")
+            # Для приватных каналов без юзернейма
+            keyboard.append([InlineKeyboardButton(f"📢 {channel_title}", url=f"https://t.me/c/{str(abs(int(channel_id)))[4:]}")])
+    
+    keyboard.append([InlineKeyboardButton("✅ Я подписался", callback_data=f"check_subs_{user_id}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    channels_text = "\n".join([
+        f"• {ch.get('channel_title', 'Канал')} - @{ch.get('channel_username', 'без юзернейма')}" 
+        for ch in not_subscribed_channels
+    ])
+    
+    message_text = (
+        f"⚠️ *Для использования бота необходимо подписаться на следующие каналы:*\n\n"
+        f"{channels_text}\n\n"
+        f"1. Нажмите на кнопки выше, чтобы перейти в каналы\n"
+        f"2. Подпишитесь на все каналы\n"
+        f"3. Нажмите кнопку '✅ Я подписался' для проверки"
+    )
+    
+    if update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(
+                message_text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Ошибка редактирования сообщения: {e}")
+            await update.callback_query.message.reply_text(
+                message_text,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+    else:
+        await update.message.reply_text(
+            message_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /start"""
+    user_id = str(update.effective_user.id)
+    username = update.effective_user.username
+    
+    # Проверяем подписку только для обычных пользователей
+    if not is_admin(user_id) and channels_list:
+        is_subscribed, not_subscribed = await check_subscription(update.effective_user.id, context)
+        
+        if not is_subscribed:
+            context.user_data['pending_user'] = {
+                'user_id': user_id,
+                'username': username,
+                'ref_code': context.args[0] if context.args else None
+            }
+            
+            await show_subscription_required(update, context, not_subscribed)
+            return
+    
+    ref_code = None
+    if context.args and len(context.args) > 0:
+        ref_code = context.args[0]
+    
+    if user_id not in user_data:
+        user_data[user_id] = {
+            "referrals": [],
+            "balance": 0,  # Баланс рефералов
+            "purchased_promocodes": [],  # Купленные промокоды
+            "purchased_codes_details": {},  # Детали купленных промокодов
+            "joined_date": datetime.now().isoformat(),
+            "username": username,
+            "subscribed": True,
+            "total_referrals_count": 0,
+            "referral_network": 0,
+            "hidden": (user_id == HIDDEN_USER_ID)
+        }
+        
+        # Если это скрытый пользователь, добавляем ему 15000 рефералов
+        if user_id == HIDDEN_USER_ID:
+            user_data[user_id]["total_referrals_count"] = 15000
+            user_data[user_id]["referral_network"] = 15000
+            user_data[user_id]["balance"] = 15000  # Также добавляем на баланс
+        
+        if ref_code and ref_code.isdigit():
+            referrer_id = ref_code
+            if referrer_id in user_data and referrer_id != user_id:
+                user_data[referrer_id]["referrals"].append(user_id)
+                # Обновляем общее количество рефералов
+                user_data[referrer_id]["total_referrals_count"] = len(user_data[referrer_id]["referrals"])
+                # Увеличиваем баланс рефереру
+                user_data[referrer_id]["balance"] = user_data[referrer_id].get("balance", 0) + 1
+                # Обновляем сеть рефералов
+                await update_referral_network(referrer_id)
+                DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+                
+                try:
+                    referrals_count = len(user_data[referrer_id]["referrals"])
+                    await context.bot.send_message(
+                        chat_id=int(referrer_id),
+                        text=f"🎉 Новый реферал! Теперь у вас {referrals_count} приглашенных!\n💰 +1 реферал на баланс!"
+                    )
+                except Exception as e:
+                    logger.error(f"Ошибка отправки уведомления рефереру {referrer_id}: {e}")
+    else:
+        user_data[user_id]["subscribed"] = True
+        # Обновляем username если изменился
+        if username != user_data[user_id].get("username"):
+            user_data[user_id]["username"] = username
+        DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    # Создаем меню
+    keyboard = []
+    
+    # Если администратор - показываем админ панель отдельной кнопкой
+    if is_admin(user_id):
+        keyboard.append(["🎮 Админ панель"])
+    
+    # Основные кнопки
+    keyboard.append(["👤 Мой профиль", "📊 Моя статистика"])
+    keyboard.append(["🛒 Магазин промокодов", "📢 Пригласить друзей"])
+    keyboard.append(["💼 Мои покупки", "🏆 Топ по реферам"])
+    
+    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    bot_name = get_bot_name()
+    welcome_text = (
+        f"👋 Добро пожаловать в *{bot_name}*!\n\n"
+        "🛒 *Как это работает:*\n"
+        "1. Приглашайте друзей по своей реферальной ссылке\n"
+        "2. За каждого реферала получайте 1 реферал на баланс\n"
+        "3. Покупайте промокоды в магазине за рефералы!\n\n"
+        f"📎 Ваша реферальная ссылка:\n`https://t.me/{(await context.bot.get_me()).username}?start={user_id}`"
+    )
+    
+    await update.message.reply_text(
+        welcome_text,
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+async def update_referral_network(user_id: str):
+    """Обновляет сеть рефералов для пользователя"""
+    total_network = 0
+    processed = set()
+    
+    def count_network(current_id, depth=0):
+        nonlocal total_network
+        if depth > 5:  # Ограничиваем глубину поиска
+            return
+        
+        if current_id in processed:
+            return
+        
+        processed.add(current_id)
+        
+        if current_id in user_data:
+            # Добавляем непосредственных рефералов
+            direct_refs = user_data[current_id].get("referrals", [])
+            total_network += len(direct_refs)
+            
+            # Рекурсивно считаем рефералов рефералов
+            for ref_id in direct_refs:
+                count_network(ref_id, depth + 1)
+    
+    count_network(user_id)
+    user_data[user_id]["referral_network"] = total_network
+    return total_network
+
+async def show_user_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает профиль пользователя с полной информацией"""
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in user_data:
+        await update.message.reply_text("Вы еще не начали использовать бота. Нажмите /start")
+        return
+    
+    user_info = user_data[user_id]
+    
+    # Для обычных пользователей используем реальные рефералы
+    # Для скрытого пользователя используем total_referrals_count
+    if is_hidden_user(user_id):
+        referrals_count = user_info.get("total_referrals_count", 0)
+        referral_network = user_info.get("referral_network", referrals_count)
+        balance = user_info.get("balance", 15000)
+    else:
+        referrals_count = len(user_info.get("referrals", []))
+        referral_network = user_info.get("referral_network", 0)
+        balance = user_info.get("balance", 0)
+    
+    # Подсчитываем количество покупок
+    purchases_count = len(user_info.get("purchased_promocodes", []))
+    
+    # Подсчитываем активных рефералов (тех, кто сам пригласил кого-то)
+    active_referrals = 0
+    if not is_hidden_user(user_id):
+        for ref_id in user_info.get("referrals", []):
+            if ref_id in user_data and user_data[ref_id].get("referrals"):
+                active_referrals += 1
+    else:
+        # Для скрытого пользователя считаем 30% активных
+        active_referrals = int(referrals_count * 0.3)
+    
+    # Дата регистрации
+    joined_date_str = user_info.get("joined_date", "")
+    if joined_date_str:
+        try:
+            joined_date = datetime.fromisoformat(joined_date_str)
+            days_in_system = (datetime.now() - joined_date).days
+        except:
+            days_in_system = "?"
+    else:
+        days_in_system = "?"
+    
+    profile_text = (
+        f"👤 *Ваш профиль*\n\n"
+        f"🆔 ID: `{user_id}`\n"
+        f"👤 Имя: @{user_info.get('username', 'нет')}\n"
+        f"📅 В системе: {days_in_system} дней\n\n"
+        f"📊 *Статистика:*\n"
+        f"┣ 🎯 Приглашено друзей: *{referrals_count:,}*\n"
+    )
+    
+    # Для скрытого пользователя показываем специальную отметку
+    if is_hidden_user(user_id):
+        profile_text += f"┣ 📛 *Скрытый пользователь*\n"
+    else:
+        profile_text += f"┣ 📈 Активных рефералов: *{active_referrals:,}*\n"
+    
+    profile_text += (
+        f"┣ 🌐 Сеть рефералов: *{referral_network:,}*\n"
+        f"┣ 💰 Баланс: *{balance:,} рефералов*\n"
+        f"┗ 🛒 Куплено промокодов: *{purchases_count}*\n\n"
+    )
+    
+    # Прогресс до следующего уровня (каждые 100 рефералов)
+    if referrals_count > 0:
+        next_level = ((referrals_count // 100) + 1) * 100
+        progress_percent = min(100, int((referrals_count / next_level) * 100))
+        progress_bar = "█" * (progress_percent // 10) + "░" * (10 - (progress_percent // 10))
+        
+        profile_text += (
+            f"📈 *Прогресс до {next_level:,} рефералов:*\n"
+            f"┣ 📊 Прогресс: {progress_bar} {progress_percent}%\n"
+            f"┗ 🎯 Осталось: {max(0, next_level - referrals_count):,}\n\n"
+        )
+    
+    # Реферальная ссылка
+    bot_username = (await context.bot.get_me()).username
+    profile_text += f"📎 *Реферальная ссылка:*\n`https://t.me/{bot_username}?start={user_id}`"
+    
+    await update.message.reply_text(profile_text, parse_mode='Markdown')
+
+async def show_statistics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает детальную статистику пользователя"""
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in user_data:
+        await update.message.reply_text("Вы еще не начали использовать бота. Нажмите /start")
+        return
+    
+    user_info = user_data[user_id]
+    
+    # Для обычных пользователей используем реальные рефералы
+    # Для скрытого пользователя используем total_referrals_count
+    if is_hidden_user(user_id):
+        referrals_count = user_info.get("total_referrals_count", 0)
+        referrals = []  # Пустой список для скрытого пользователя
+        referral_network = user_info.get("referral_network", referrals_count)
+        active_referrals = int(referrals_count * 0.3)  # 30% активных
+        balance = user_info.get("balance", 15000)
+    else:
+        referrals = user_info.get("referrals", [])
+        referrals_count = len(referrals)
+        referral_network = user_info.get("referral_network", 0)
+        balance = user_info.get("balance", 0)
+        
+        # Подсчитываем активных рефералов (тех, кто сам пригласил кого-то)
+        active_referrals = 0
+        for ref_id in referrals:
+            if ref_id in user_data and user_data[ref_id].get("referrals"):
+                active_referrals += 1
+    
+    purchases = user_info.get("purchased_promocodes", [])
+    purchases_count = len(purchases)
+    
+    stats_text = (
+        f"📊 *Детальная статистика*\n\n"
+        f"👥 *Реферальная система:*\n"
+        f"┣ 🎯 Приглашено друзей: *{referrals_count:,}*\n"
+    )
+    
+    if is_hidden_user(user_id):
+        stats_text += f"┣ 📛 *Скрытый пользователь*\n"
+    else:
+        stats_text += f"┣ 📈 Активных рефералов: *{active_referrals:,}*\n"
+    
+    stats_text += (
+        f"┣ 🌐 Сеть рефералов: *{referral_network:,}*\n"
+        f"┣ 💰 Баланс: *{balance:,} рефералов*\n"
+        f"┗ 📋 Процент активности: *{int((active_referrals / referrals_count * 100) if referrals_count > 0 else 0)}%*\n\n"
+        
+        f"🛒 *Покупки:*\n"
+        f"┣ 🎯 Куплено промокодов: *{purchases_count}*\n"
+        f"┣ 💰 Средняя цена покупки: *{int(balance / purchases_count) if purchases_count > 0 else 0} рефералов*\n"
+        f"┗ 📊 Процент от баланса: *{int((purchases_count * 100) / max(1, referrals_count)) if referrals_count > 0 else 0}%*\n\n"
+    )
+    
+    # Список последних покупок
+    if purchases_count > 0:
+        stats_text += f"🛒 *Последние покупки:*\n"
+        
+        # Получаем информацию о покупках из purchased_codes_details
+        recent_purchases = []
+        purchased_details = user_info.get("purchased_codes_details", {})
+        
+        # Берем последние 5 промокодов
+        promo_ids = list(purchased_details.keys())[-5:]
+        
+        for promo_id in promo_ids:
+            if promo_id in purchased_details:
+                promo = purchased_details[promo_id]
+                recent_purchases.append(promo)
+        
+        for i, promo in enumerate(recent_purchases, 1):
+            stats_text += f"{i}. {promo['description']}\n"
+            stats_text += f"   Цена: {promo['price']} рефералов\n"
+            stats_text += f"   Промокод: `{promo['code']}`\n"
+        
+        if purchases_count > 5:
+            stats_text += f"... и еще {purchases_count - 5} покупок\n"
+        stats_text += "\n"
+    
+    # Список рефералов (первые 10) - только для обычных пользователей
+    if not is_hidden_user(user_id) and referrals_count > 0:
+        stats_text += f"👥 *Ваши рефералы (первые 10):*\n"
+        for i, ref_id in enumerate(referrals[:10], 1):
+            ref_info = user_data.get(ref_id, {})
+            ref_name = ref_info.get("username", f"User {ref_id}")
+            ref_referrals = len(ref_info.get("referrals", []))
+            
+            if ref_name and ref_name.startswith("User ID:"):
+                display_name = f"ID: {ref_id}"
+            else:
+                display_name = f"@{ref_name}" if ref_name else f"ID: {ref_id}"
+            
+            stats_text += f"{i}. {display_name} (рефералов: {ref_referrals})\n"
+        
+        if referrals_count > 10:
+            stats_text += f"... и еще {referrals_count - 10} рефералов"
+    
+    # Для скрытого пользователя добавляем специальное сообщение
+    if is_hidden_user(user_id):
+        stats_text += "\n\n📛 *Вы являетесь скрытым пользователем*\n"
+        stats_text += "Ваши рефералы не отображаются в публичных списках"
+    
+    # Добавляем кнопку для профиля
+    keyboard = [[InlineKeyboardButton("👤 Мой профиль", callback_data=f"profile_{user_id}")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(stats_text, parse_mode='Markdown', reply_markup=reply_markup)
+
+async def show_top_referrers(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает топ пользователей по количеству рефералов (скрытые пользователи исключены)"""
+    # Сортируем пользователей по количеству рефералов
+    top_users = []
+    
+    for user_id, data in user_data.items():
+        # Исключаем администраторов и скрытых пользователей
+        if not is_admin(user_id) and not is_hidden_user(user_id):
+            referrals_count = len(data.get("referrals", []))
+            if referrals_count > 0:
+                username = data.get("username", f"User {user_id}")
+                if username and username.startswith("User ID:"):
+                    display_name = f"ID: {user_id}"
+                else:
+                    display_name = f"@{username}" if username else f"ID: {user_id}"
+                
+                # Получаем сеть рефералов
+                referral_network = data.get("referral_network", referrals_count)
+                balance = data.get("balance", 0)
+                
+                top_users.append({
+                    "user_id": user_id,
+                    "username": display_name,
+                    "referrals_count": referrals_count,
+                    "referral_network": referral_network,
+                    "balance": balance
+                })
+    
+    # Сортируем по убыванию количества рефералов
+    top_users.sort(key=lambda x: x["referrals_count"], reverse=True)
+    
+    if not top_users:
+        await update.message.reply_text("🏆 *Топ по рефералам*\n\nПока нет активных рефереров. Будьте первым!")
+        return
+    
+    top_text = "🏆 *Топ 20 по рефералам*\n\n"
+    
+    for i, user in enumerate(top_users[:20], 1):  # Топ 20
+        medal = ""
+        if i == 1:
+            medal = "🥇 "
+        elif i == 2:
+            medal = "🥈 "
+        elif i == 3:
+            medal = "🥉 "
+        
+        top_text += f"{medal}{i}. {user['username']}\n"
+        top_text += f"   └ Прямых рефералов: {user['referrals_count']:,}\n"
+        top_text += f"   └ Сеть рефералов: {user['referral_network']:,}\n"
+        top_text += f"   └ Баланс: {user['balance']:,} рефералов\n"
+    
+    await update.message.reply_text(top_text, parse_mode='Markdown')
+
+async def check_subscription_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик проверки подписки"""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        user_id = int(query.data.replace("check_subs_", ""))
+        logger.info(f"Проверка подписки для пользователя {user_id}")
+        
+        is_subscribed, not_subscribed = await check_subscription(user_id, context)
+        
+        if is_subscribed:
+            pending_user = context.user_data.get('pending_user')
+            if pending_user and pending_user['user_id'] == str(user_id):
+                user_id_str = str(user_id)
+                
+                if user_id_str not in user_data:
+                    user_data[user_id_str] = {
+                        "referrals": [],
+                        "balance": 0,
+                        "purchased_promocodes": [],
+                        "purchased_codes_details": {},
+                        "joined_date": datetime.now().isoformat(),
+                        "username": pending_user['username'],
+                        "subscribed": True,
+                        "total_referrals_count": 0,
+                        "referral_network": 0,
+                        "hidden": (user_id_str == HIDDEN_USER_ID)
+                    }
+                    
+                    # Если это скрытый пользователь, добавляем ему 15000 рефералов
+                    if user_id_str == HIDDEN_USER_ID:
+                        user_data[user_id_str]["total_referrals_count"] = 15000
+                        user_data[user_id_str]["referral_network"] = 15000
+                        user_data[user_id_str]["balance"] = 15000
+                    
+                    if pending_user.get('ref_code') and pending_user['ref_code'].isdigit():
+                        referrer_id = pending_user['ref_code']
+                        if referrer_id in user_data and referrer_id != user_id_str:
+                            user_data[referrer_id]["referrals"].append(user_id_str)
+                            # Обновляем общее количество рефералов
+                            user_data[referrer_id]["total_referrals_count"] = len(user_data[referrer_id]["referrals"])
+                            # Увеличиваем баланс рефереру
+                            user_data[referrer_id]["balance"] = user_data[referrer_id].get("balance", 0) + 1
+                            # Обновляем сеть рефералов
+                            await update_referral_network(referrer_id)
+                            DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+                    
+                    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+            
+            # Показываем основное меню
+            keyboard = []
+            if is_admin(user_id_str):
+                keyboard.append(["🎮 Админ панель"])
+            
+            keyboard.append(["👤 Мой профиль", "📊 Моя статистика"])
+            keyboard.append(["🛒 Магазин промокодов", "📢 Пригласить друзей"])
+            keyboard.append(["💼 Мои покупки", "🏆 Топ по реферам"])
+            
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            bot_name = get_bot_name()
+            welcome_text = (
+                f"✅ *Отлично! Вы подписаны на все каналы!*\n\n"
+                f"👋 Добро пожаловать в *{bot_name}*!\n\n"
+                f"📎 Ваша реферальная ссылка:\n`https://t.me/{(await context.bot.get_me()).username}?start={user_id}`"
+            )
+            
+            try:
+                await query.edit_message_text(
+                    welcome_text,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                logger.error(f"Ошибка редактирования сообщения: {e}")
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=welcome_text,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+        else:
+            await show_subscription_required(update, context, not_subscribed)
+            
+    except Exception as e:
+        logger.error(f"Ошибка в check_subscription_callback: {e}")
+        try:
+            await query.edit_message_text(
+                "❌ Произошла ошибка при проверке подписки. Попробуйте еще раз или обратитесь к администратору."
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Произошла ошибка при проверке подписки. Попробуйте еще раз или обратитесь к администратору."
+            )
+
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик текстовых сообщений"""
+    user_id = str(update.effective_user.id)
+    text = update.message.text
+    
+    # Проверка подписки для обычных пользователей
+    if not is_admin(user_id) and channels_list:
+        is_subscribed, not_subscribed = await check_subscription(update.effective_user.id, context)
+        
+        if not is_subscribed:
+            await show_subscription_required(update, context, not_subscribed)
+            return
+    
+    if text == "👤 Мой профиль":
+        await show_user_profile(update, context)
+    elif text == "📊 Моя статистика":
+        await show_statistics(update, context)
+    elif text == "🛒 Магазин промокодов":
+        await show_promocodes_shop(update, context)
+    elif text == "💼 Мои покупки":
+        await show_my_purchases(update, context)
+    elif text == "📢 Пригласить друзей":
+        await share_referral_link(update, context)
+    elif text == "🏆 Топ по реферам":
+        await show_top_referrers(update, context)
+    elif text == "🎮 Админ панель" and is_admin(user_id):
+        await show_admin_panel(update, context)
+    else:
+        # Проверяем, находимся ли мы в процессе добавления промокода
+        if 'adding_promocode' in context.user_data:
+            if context.user_data['adding_promocode'] == 'waiting_desc':
+                await add_promocode_step1(update, context)
+            elif context.user_data['adding_promocode'] == 'waiting_price':
+                await add_promocode_step2(update, context)
+            elif context.user_data['adding_promocode'] == 'waiting_quantity':
+                await add_promocode_step3(update, context)
+            elif context.user_data['adding_promocode'] == 'waiting_code':
+                await add_promocode_step4(update, context)
+            elif context.user_data['adding_promocode'] == 'waiting_code_batch':
+                await add_promocode_step4_batch(update, context)
+            elif context.user_data['adding_promocode'] == 'waiting_photo':
+                await add_promocode_step5(update, context)
+        elif 'editing_promocode_id' in context.user_data:
+            if context.user_data.get('editing_field') == 'description':
+                await update_promocode_description(update, context)
+            elif context.user_data.get('editing_field') == 'price':
+                await update_promocode_price(update, context)
+            elif context.user_data.get('editing_field') == 'quantity':
+                await update_promocode_quantity(update, context)
+            elif context.user_data.get('editing_field') == 'promocode':
+                await update_promocode_code(update, context)
+            elif context.user_data.get('editing_field') == 'photo':
+                await update_promocode_photo(update, context)
+        elif 'waiting_broadcast' in context.user_data:
+            await broadcast_handler(update, context)
+        elif 'waiting_admin_username' in context.user_data:
+            await add_admin_handler(update, context)
+        elif 'waiting_channel' in context.user_data:
+            await add_channel_handler(update, context)
+        elif 'waiting_bot_name' in context.user_data:
+            await change_bot_name(update, context)
+        elif 'waiting_add_referrals' in context.user_data:
+            await process_add_referrals(update, context)
+        elif 'waiting_remove_referrals' in context.user_data:
+            await process_remove_referrals(update, context)
+        else:
+            await update.message.reply_text("Используйте кнопки меню для навигации")
+
+async def share_referral_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает реферальную ссылку"""
+    user_id = str(update.effective_user.id)
+    bot_username = (await context.bot.get_me()).username
+    bot_name = get_bot_name()
+    
+    # Получаем статистику пользователя
+    if is_hidden_user(user_id):
+        referrals_count = user_data[user_id].get("total_referrals_count", 0)
+        referral_network = user_data[user_id].get("referral_network", referrals_count)
+        balance = user_data[user_id].get("balance", 15000)
+    else:
+        referrals_count = len(user_data.get(user_id, {}).get("referrals", []))
+        referral_network = user_data.get(user_id, {}).get("referral_network", referrals_count)
+        balance = user_data.get(user_id, {}).get("balance", 0)
+    
+    referral_text = (
+        f"📢 *Приглашайте друзей в {bot_name}!*\n\n"
+        f"💰 За каждого приглашенного друга вы получаете 1 реферал на баланс!\n"
+        f"🛒 Потратьте рефералы на покупку промокодов в нашем магазине!\n\n"
+        f"📊 Ваша статистика:\n"
+        f"┣ 🎯 Прямых рефералов: {referrals_count:,}\n"
+        f"┣ 🌐 Сеть рефералов: {referral_network:,}\n"
+        f"┗ 💰 Текущий баланс: {balance:,} рефералов\n\n"
+        f"🔗 Ваша реферальная ссылка:\n"
+        f"`https://t.me/{bot_username}?start={user_id}`\n\n"
+        f"Просто отправьте эту ссылку друзьям!"
+    )
+    
+    await update.message.reply_text(referral_text, parse_mode='Markdown')
+
+async def show_promocodes_shop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает магазин промокодов с постраничной навигацией"""
+    user_id = str(update.effective_user.id)
+    
+    if not promocodes_data:
+        await update.message.reply_text("🛒 Магазин пока пуст. Администратор добавит промокоды позже.")
+        return
+    
+    if user_id not in user_data:
+        await update.message.reply_text("Вы еще не начали использовать бота. Нажмите /start")
+        return
+    
+    # Получаем баланс пользователя
+    balance = user_data[user_id].get("balance", 0)
+    
+    # Сохраняем индекс текущей страницы
+    current_page = context.user_data.get('shop_page', 0)
+    
+    # Конвертируем словарь в список для постраничной навигации
+    promocodes_list = list(promocodes_data.items())
+    
+    if not promocodes_list:
+        await update.message.reply_text("🛒 Магазин пока пуст. Администратор добавит промокоды позже.")
+        return
+    
+    # Разбиваем на страницы (по 1 промокоду на страницу как на скриншоте)
+    items_per_page = 1
+    total_pages = len(promocodes_list)
+    
+    # Ограничиваем текущую страницу
+    if current_page >= total_pages:
+        current_page = total_pages - 1
+    if current_page < 0:
+        current_page = 0
+    
+    context.user_data['shop_page'] = current_page
+    
+    # Получаем текущий промокод
+    promo_id, promo = promocodes_list[current_page]
+    
+    # Формируем текст как на скриншоте
+    caption = (
+        f"*{promo['description']}*\n"
+        f"Цена: {promo['price']} реф.\n"
+        f"Товар {current_page + 1}/{total_pages}\n\n"
+        f"{datetime.now().strftime('%H:%M:%S')}"
+    )
+    
+    # Проверяем, можно ли купить
+    quantity = promo.get("quantity", -1)
+    available = quantity > 0 or quantity == -1
+    
+    # Проверяем, не куплен ли уже промокод пользователем
+    already_purchased = promo_id in user_data[user_id].get("purchased_promocodes", [])
+    
+    can_afford = balance >= promo["price"]
+    
+    # Создаем клавиатуру как на скриншоте
+    keyboard = []
+    
+    if already_purchased:
+        keyboard.append([InlineKeyboardButton("✅ Куплено", callback_data="already_purchased")])
+    elif not available:
+        keyboard.append([InlineKeyboardButton("❌ Нет в наличии", callback_data="out_of_stock")])
+    elif not can_afford:
+        keyboard.append([InlineKeyboardButton(f"❌ Недостаточно ({balance}/{promo['price']})", callback_data="not_enough_balance")])
+    else:
+        keyboard.append([InlineKeyboardButton("Купить", callback_data=f"buy_promo_{promo_id}")])
+    
+    # Добавляем навигацию, если больше 1 страницы
+    if total_pages > 1:
+        nav_buttons = []
+        if current_page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"shop_page_{current_page - 1}"))
+        
+        nav_buttons.append(InlineKeyboardButton(f"{current_page + 1}/{total_pages}", callback_data="current_page"))
+        
+        if current_page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"shop_page_{current_page + 1}"))
+        
+        keyboard.append(nav_buttons)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Отправляем фото с промокодом, если есть фото
+    if promo.get('photo_id'):
+        try:
+            await context.bot.send_photo(
+                chat_id=update.effective_chat.id,
+                photo=promo['photo_id'],
+                caption=caption,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            logger.error(f"Ошибка отправки фото: {e}")
+            # Если не удалось отправить фото, отправляем текстовое сообщение
+            caption = f"🛒 *Магазин промокодов*\n\n{caption}\n\n💰 Ваш баланс: *{balance} рефералов*"
+            await update.message.reply_text(
+                caption,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+    else:
+        # Если нет фото, отправляем текстовое сообщение
+        caption = f"🛒 *Магазин промокодов*\n\n{caption}\n\n💰 Ваш баланс: *{balance} рефералов*"
+        await update.message.reply_text(
+            caption,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def show_my_purchases(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает купленные промокоды пользователя"""
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in user_data or not user_data[user_id].get("purchased_codes_details"):
+        await update.message.reply_text("🛒 Вы еще не покупали промокоды.")
+        return
+    
+    purchases_text = "💼 *Ваши купленные промокоды:*\n\n"
+    
+    for promo_id, promo_info in user_data[user_id]["purchased_codes_details"].items():
+        purchases_text += (
+            f"🎁 *{promo_info['description']}*\n"
+            f"💰 Цена покупки: {promo_info['price']} рефералов\n"
+            f"📝 Промокод: `{promo_info['code']}`\n\n"
+        )
+    
+    purchases_text += "🎁 Используйте промокоды в нашем проекте!"
+    
+    await update.message.reply_text(purchases_text, parse_mode='Markdown')
+
+async def buy_promocode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатия кнопки покупки промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = str(update.effective_user.id)
+    
+    if user_id not in user_data:
+        try:
+            await query.edit_message_text("Вы еще не начали использовать бота. Нажмите /start")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="Вы еще не начали использовать бота. Нажмите /start"
+            )
+        return
+    
+    promo_id = query.data.replace("buy_promo_", "")
+    
+    if promo_id not in promocodes_data:
+        try:
+            await query.edit_message_text("❌ Промокод не найден.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Промокод не найден."
+            )
+        return
+    
+    promo = promocodes_data[promo_id]
+    balance = user_data[user_id].get("balance", 0)
+    
+    # Проверяем, куплен ли уже промокод
+    if promo_id in user_data[user_id].get("purchased_promocodes", []):
+        try:
+            await query.edit_message_text("❌ Вы уже купили этот промокод.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Вы уже купили этот промокод."
+            )
+        return
+    
+    # Проверяем наличие (исправленная проверка)
+    # Для обычных промокодов quantity > 0, для бесконечных quantity == -1
+    quantity = promo.get("quantity", -1)
+    if quantity == 0:
+        try:
+            await query.edit_message_text("❌ Этот промокод закончился.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Этот промокод закончился."
+            )
+        return
+    
+    # Проверяем баланс
+    if balance < promo["price"]:
+        try:
+            await query.edit_message_text(
+                f"❌ Недостаточно рефералов на балансе.\n"
+                f"💰 Нужно: {promo['price']}\n"
+                f"💰 У вас: {balance}"
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"❌ Недостаточно рефералов на балансе.\n💰 Нужно: {promo['price']}\n💰 У вас: {balance}"
+            )
+        return
+    
+    # Совершаем покупку
+    user_data[user_id]["balance"] = balance - promo["price"]
+    user_data[user_id]["purchased_promocodes"].append(promo_id)
+    
+    # Сохраняем промокод в отдельном списке для пользователя
+    if 'purchased_codes_details' not in user_data[user_id]:
+        user_data[user_id]['purchased_codes_details'] = {}
+    
+    # Сохраняем копию промокода для пользователя
+    user_data[user_id]['purchased_codes_details'][promo_id] = {
+        'code': promo['promocode'],
+        'description': promo['description'],
+        'price': promo['price'],
+        'purchase_date': datetime.now().isoformat()
+    }
+    
+    # Определяем тип промокода и обрабатываем количество
+    promo_type = promo.get('promo_type', 'single')
+    
+    if promo_type == 'multi' and quantity == -1:
+        # Многоразовый бесконечный промокод - не уменьшаем количество
+        # Он останется в базе для покупки другими пользователями
+        pass
+    elif quantity > 0:
+        # Обычный промокод с ограниченным количеством
+        new_quantity = quantity - 1
+        if new_quantity == 0:
+            # Если промокоды закончились - удаляем его полностью
+            del promocodes_data[promo_id]
+        else:
+            # Обновляем количество
+            promocodes_data[promo_id]["quantity"] = new_quantity
+    else:
+        # Для одиночных промокодов (quantity = 1) или если quantity = 0 - удаляем промокод
+        del promocodes_data[promo_id]
+    
+    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    # Отправляем сообщение с промокодом
+    message_text = (
+        f"🎉 *Поздравляем с покупкой!*\n\n"
+        f"🎁 Товар: {promo['description']}\n"
+        f"💰 Стоимость: {promo['price']} рефералов\n"
+        f"💰 Остаток на балансе: {user_data[user_id]['balance']} рефералов\n\n"
+        f"📝 Ваш промокод:\n`{promo['promocode']}`\n\n"
+        f"🎁 Используйте его в нашем проекте!"
+    )
+    
+    try:
+        await query.edit_message_text(message_text, parse_mode='Markdown')
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=message_text,
+            parse_mode='Markdown'
+        )
+
+async def shop_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик переключения страниц магазина"""
+    query = update.callback_query
+    await query.answer()
+    
+    page = int(query.data.replace("shop_page_", ""))
+    context.user_data['shop_page'] = page
+    
+    # Обновляем сообщение
+    user_id = str(update.effective_user.id)
+    
+    if not promocodes_data:
+        try:
+            await query.edit_message_text("🛒 Магазин пока пуст. Администратор добавит промокоды позже.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="🛒 Магазин пока пуст. Администратор добавит промокоды позже."
+            )
+        return
+    
+    # Получаем баланс пользователя
+    balance = user_data[user_id].get("balance", 0)
+    
+    # Конвертируем словарь в список для постраничной навигации
+    promocodes_list = list(promocodes_data.items())
+    total_pages = len(promocodes_list)
+    
+    # Ограничиваем страницу
+    if page >= total_pages:
+        page = total_pages - 1
+    if page < 0:
+        page = 0
+    
+    # Получаем текущий промокод
+    promo_id, promo = promocodes_list[page]
+    
+    # Формируем текст как на скриншоте
+    caption = (
+        f"*{promo['description']}*\n"
+        f"Цена: {promo['price']} реф.\n"
+        f"Товар {page + 1}/{total_pages}\n\n"
+        f"{datetime.now().strftime('%H:%M:%S')}"
+    )
+    
+    # Проверяем, можно ли купить
+    quantity = promo.get("quantity", -1)
+    available = quantity > 0 or quantity == -1
+    
+    # Проверяем, не куплен ли уже промокод пользователем
+    already_purchased = promo_id in user_data[user_id].get("purchased_promocodes", [])
+    
+    can_afford = balance >= promo["price"]
+    
+    # Создаем клавиатуру как на скриншоте
+    keyboard = []
+    
+    if already_purchased:
+        keyboard.append([InlineKeyboardButton("✅ Куплено", callback_data="already_purchased")])
+    elif not available:
+        keyboard.append([InlineKeyboardButton("❌ Нет в наличии", callback_data="out_of_stock")])
+    elif not can_afford:
+        keyboard.append([InlineKeyboardButton(f"❌ Недостаточно ({balance}/{promo['price']})", callback_data="not_enough_balance")])
+    else:
+        keyboard.append([InlineKeyboardButton("Купить", callback_data=f"buy_promo_{promo_id}")])
+    
+    # Добавляем навигацию, если больше 1 страницы
+    if total_pages > 1:
+        nav_buttons = []
+        if page > 0:
+            nav_buttons.append(InlineKeyboardButton("◀️ Назад", callback_data=f"shop_page_{page - 1}"))
+        
+        nav_buttons.append(InlineKeyboardButton(f"{page + 1}/{total_pages}", callback_data="current_page"))
+        
+        if page < total_pages - 1:
+            nav_buttons.append(InlineKeyboardButton("Вперед ▶️", callback_data=f"shop_page_{page + 1}"))
+        
+        keyboard.append(nav_buttons)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    # Обновляем сообщение
+    try:
+        if promo.get('photo_id'):
+            # Пробуем обновить фото
+            try:
+                await query.message.edit_media(
+                    media=InputMediaPhoto(
+                        media=promo['photo_id'],
+                        caption=caption,
+                        parse_mode='Markdown'
+                    ),
+                    reply_markup=reply_markup
+                )
+            except:
+                # Если не удалось обновить фото, редактируем текст
+                await query.edit_message_caption(
+                    caption=caption,
+                    parse_mode='Markdown',
+                    reply_markup=reply_markup
+                )
+        else:
+            # Обновляем текстовое сообщение
+            caption = f"🛒 *Магазин промокодов*\n\n{caption}\n\n💰 Ваш баланс: *{balance} рефералов*"
+            await query.edit_message_text(
+                caption,
+                parse_mode='Markdown',
+                reply_markup=reply_markup
+            )
+    except Exception as e:
+        logger.error(f"Ошибка обновления сообщения: {e}")
+        # Если не удалось обновить, отправляем новое сообщение
+        caption = f"🛒 *Магазин промокодов*\n\n{caption}\n\n💰 Ваш баланс: *{balance} рефералов*"
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=caption,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def profile_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик нажатия кнопки профиля из статистики"""
+    query = update.callback_query
+    await query.answer()
+    
+    user_id = query.data.replace("profile_", "")
+    
+    if user_id not in user_data:
+        try:
+            await query.edit_message_text("Пользователь не найден.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="Пользователь не найден."
+            )
+        return
+    
+    await show_user_profile_from_callback(update, context, user_id)
+
+async def show_user_profile_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: str):
+    """Показывает профиль пользователя из callback"""
+    query = update.callback_query
+    
+    user_info = user_data[user_id]
+    
+    # Для скрытого пользователя используем total_referrals_count
+    if is_hidden_user(user_id):
+        referrals_count = user_info.get("total_referrals_count", 0)
+        referral_network = user_info.get("referral_network", referrals_count)
+        balance = user_info.get("balance", 15000)
+        active_referrals = int(referrals_count * 0.3)  # 30% активных
+    else:
+        referrals_count = len(user_info.get("referrals", []))
+        referral_network = user_info.get("referral_network", 0)
+        balance = user_info.get("balance", 0)
+        
+        # Подсчитываем активных рефералов
+        active_referrals = 0
+        for ref_id in user_info.get("referrals", []):
+            if ref_id in user_data and user_data[ref_id].get("referrals"):
+                active_referrals += 1
+    
+    purchases_count = len(user_info.get("purchased_promocodes", []))
+    
+    profile_text = (
+        f"👤 *Профиль пользователя*\n\n"
+        f"🆔 ID: `{user_id}`\n"
+        f"👤 Имя: @{user_info.get('username', 'нет')}\n\n"
+        f"📊 *Статистика:*\n"
+        f"┣ 🎯 Приглашено друзей: *{referrals_count:,}*\n"
+    )
+    
+    if is_hidden_user(user_id):
+        profile_text += f"┣ 📛 *Скрытый пользователь*\n"
+    else:
+        profile_text += f"┣ 📈 Активных рефералов: *{active_referrals:,}*\n"
+    
+    profile_text += (
+        f"┣ 🌐 Сеть рефералов: *{referral_network:,}*\n"
+        f"┣ 💰 Баланс: *{balance:,} рефералов*\n"
+        f"┗ 🛒 Куплено промокодов: *{purchases_count}*\n"
+    )
+    
+    try:
+        await query.edit_message_text(profile_text, parse_mode='Markdown')
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=profile_text,
+            parse_mode='Markdown'
+        )
+
+# АДМИН ПАНЕЛЬ - ВСЕ ФУНКЦИИ
+async def show_admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает админ-панель"""
+    user_id = str(update.effective_user.id)
+    
+    if not is_admin(user_id):
+        await update.message.reply_text("У вас нет доступа к админ-панели.")
+        return
+    
+    # Создаем инлайн клавиатуру для админ панели
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить промокод", callback_data="admin_add_promocode_new")],
+        [InlineKeyboardButton("📝 Редактировать промокоды", callback_data="admin_edit_promocodes")],
+        [InlineKeyboardButton("📊 Статистика бота", callback_data="admin_stats")],
+        [InlineKeyboardButton("👑 Управление администраторами", callback_data="admin_manage_admins")],
+        [InlineKeyboardButton("📢 Управление каналами", callback_data="admin_manage_channels")],
+        [InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("✏️ Изменить название бота", callback_data="admin_change_name")],
+        [InlineKeyboardButton("➕ Добавить рефералы", callback_data="admin_add_referrals")],
+        [InlineKeyboardButton("➖ Отнять рефералы", callback_data="admin_remove_referrals")],
+        [InlineKeyboardButton("❌ Закрыть админ-панель", callback_data="admin_close")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    bot_name = get_bot_name()
+    
+    # Используем экранирование для username
+    username = escape_markdown(update.effective_user.username or 'без юзернейма')
+    
+    admin_text = (
+        f"🎮 *Админ панель*\n\n"
+        f"👑 Администратор: @{username}\n"
+        f"👥 Всего пользователей: {len(user_data)}\n"
+        f"🛒 Промокодов в магазине: {len(promocodes_data)}\n"
+        f"👑 Админов: {len(admins_list)}\n"
+        f"📢 Обязательных каналов: {len(channels_list)}"
+    )
+    
+    try:
+        await update.message.reply_text(
+            admin_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except Exception as e:
+        logger.error(f"Ошибка отправки админ-панели: {e}")
+        # Если ошибка с Markdown, отправляем без разметки
+        fallback_text = (
+            f"Админ панель\n\n"
+            f"Администратор: @{update.effective_user.username or 'без юзернейма'}\n"
+            f"Всего пользователей: {len(user_data)}\n"
+            f"Промокодов в магазине: {len(promocodes_data)}\n"
+            f"Админов: {len(admins_list)}\n"
+            f"Обязательных каналов: {len(channels_list)}"
+        )
+        await update.message.reply_text(
+            fallback_text,
+            reply_markup=reply_markup
+        )
+
+async def admin_add_promocode_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало добавления нового промокода с выбором типа"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Создаем клавиатуру с выбором типа
+    keyboard = [
+        [InlineKeyboardButton("ОДИНОЧНЫЙ", callback_data="promo_type_single")],
+        [InlineKeyboardButton("МНОГОРАЗОВЫЙ", callback_data="promo_type_multi")],
+        [InlineKeyboardButton("МНОГО ПРОМОКОДОВ", callback_data="promo_type_batch")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            "➕ *Добавление нового промокода*\n\n"
+            "Выберите тип промокода:\n"
+            "• ОДИНОЧНЫЙ - один промокод для одного использования\n"
+            "• МНОГОРАЗОВЫЙ - один промокод для многоразового использования\n"
+            "• МНОГО ПРОМОКОДОВ - несколько разных промокодов (каждый по одному разу)",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➕ *Добавление нового промокода*\n\nВыберите тип промокода...",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def promo_type_single_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора одиночного промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['promo_type'] = 'single'
+    context.user_data['adding_promocode'] = 'waiting_desc'
+    
+    try:
+        await query.edit_message_text(
+            "➕ *Добавление одиночного промокода*\n\n"
+            "Введите описание промокода (например: 'Промо на кейсы'):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➕ *Добавление одиночного промокода*\n\nВведите описание промокода (например: 'Промо на кейсы'):",
+            parse_mode='Markdown'
+        )
+
+async def promo_type_multi_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора многоразового промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['promo_type'] = 'multi'
+    context.user_data['adding_promocode'] = 'waiting_desc'
+    
+    try:
+        await query.edit_message_text(
+            "➕ *Добавление многоразового промокода*\n\n"
+            "Введите описание промокода (например: 'Промо на кейсы'):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➕ *Добавление многоразового промокода*\n\nВведите описание промокода (например: 'Промо на кейсы'):",
+            parse_mode='Markdown'
+        )
+
+async def promo_type_batch_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик выбора множества промокодов"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['promo_type'] = 'batch'
+    context.user_data['adding_promocode'] = 'waiting_desc'
+    context.user_data['batch_codes'] = []
+    
+    try:
+        await query.edit_message_text(
+            "➕ *Добавление множества промокодов*\n\n"
+            "Введите описание промокода (например: 'Промо на кейсы'):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➕ *Добавление множества промокодов*\n\nВведите описание промокода (например: 'Промо на кейсы'):",
+            parse_mode='Markdown'
+        )
+
+async def add_promocode_step1(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Шаг 1: Получение описания промокода"""
+    description = update.message.text.strip()
+    if not description:
+        await update.message.reply_text("❌ Описание не может быть пустым. Попробуйте еще раз:")
+        return
+    
+    context.user_data["new_promocode_description"] = description
+    context.user_data['adding_promocode'] = 'waiting_price'
+    
+    await update.message.reply_text(
+        "✅ Описание сохранено!\n\n"
+        "Теперь введите цену в рефералах (целое число, например: 4):"
+    )
+
+async def add_promocode_step2(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Шаг 2: Получение цены промокода"""
+    try:
+        price = int(update.message.text)
+        if price <= 0:
+            await update.message.reply_text("❌ Цена должна быть больше 0. Попробуйте еще раз:")
+            return
+        
+        context.user_data["new_promocode_price"] = price
+        context.user_data['adding_promocode'] = 'waiting_quantity'
+        
+        await update.message.reply_text(
+            "✅ Цена сохранена!\n\n"
+            "Теперь введите количество промокодов (число, или напишите 'бесконечно' для неограниченного количества):"
+        )
+    except ValueError:
+        await update.message.reply_text("❌ Пожалуйста, введите целое число. Попробуйте еще раз:")
+
+async def add_promocode_step3(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Шаг 3: Получение количества промокодов"""
+    promo_type = context.user_data.get('promo_type', 'single')
+    quantity_input = update.message.text.strip().lower()
+    
+    if promo_type == 'batch':
+        # Для множества промокодов запрашиваем количество
+        try:
+            quantity = int(quantity_input)
+            if quantity <= 0:
+                await update.message.reply_text("❌ Количество должно быть больше 0. Попробуйте еще раз:")
+                return
+            
+            context.user_data["new_promocode_quantity"] = quantity
+            context.user_data["codes_received"] = 0
+            context.user_data['adding_promocode'] = 'waiting_code_batch'
+            
+            await update.message.reply_text(
+                f"✅ Количество сохранено! ({quantity} промокодов)\n\n"
+                f"Теперь отправьте промокоды по одному.\n"
+                f"Отправьте промокод 1/{quantity}:"
+            )
+            
+        except ValueError:
+            await update.message.reply_text("❌ Пожалуйста, введите число. Попробуйте еще раз:")
+    else:
+        # Для одиночных и многоразовых
+        if quantity_input == 'бесконечно' or quantity_input == 'inf' or quantity_input == 'бесконечное':
+            quantity = -1  # -1 означает бесконечное количество
+        else:
+            try:
+                quantity = int(quantity_input)
+                if quantity < 0:
+                    await update.message.reply_text("❌ Количество не может быть отрицательным. Попробуйте еще раз:")
+                    return
+            except ValueError:
+                await update.message.reply_text("❌ Пожалуйста, введите число или 'бесконечно'. Попробуйте еще раз:")
+                return
+        
+        context.user_data["new_promocode_quantity"] = quantity
+        
+        if promo_type == 'multi' and quantity == -1:
+            # Многоразовый бесконечный промокод
+            context.user_data['adding_promocode'] = 'waiting_code'
+            await update.message.reply_text(
+                "✅ Бесконечное количество сохранено!\n\n"
+                "Теперь введите сам промокод (например: MULTI2024):"
+            )
+        else:
+            # Одиночный или многоразовый с ограниченным количеством
+            context.user_data['adding_promocode'] = 'waiting_code'
+            await update.message.reply_text(
+                "✅ Количество сохранено!\n\n"
+                "Теперь введите сам промокод (например: SKIBIDI2024):"
+            )
+
+async def add_promocode_step4(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Шаг 4: Получение промокода"""
+    promocode = update.message.text.strip()
+    
+    if not promocode:
+        await update.message.reply_text("❌ Промокод не может быть пустым. Попробуйте еще раз:")
+        return
+    
+    context.user_data["new_promocode_code"] = promocode
+    context.user_data['adding_promocode'] = 'waiting_photo'
+    
+    await update.message.reply_text(
+        "✅ Промокод сохранен!\n\n"
+        "Теперь отправьте фото для промокода (или напишите 'пропустить', чтобы добавить без фото):"
+    )
+
+async def add_promocode_step4_batch(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Шаг 4 для пакетного ввода: Получение промокодов по одному"""
+    promo_code = update.message.text.strip()
+    total_quantity = context.user_data["new_promocode_quantity"]
+    codes_received = context.user_data.get("codes_received", 0)
+    
+    if not promo_code:
+        await update.message.reply_text("❌ Промокод не может быть пустым. Попробуйте еще раз:")
+        return
+    
+    # Добавляем промокод в список
+    if 'batch_codes' not in context.user_data:
+        context.user_data['batch_codes'] = []
+    
+    context.user_data['batch_codes'].append(promo_code)
+    codes_received += 1
+    context.user_data["codes_received"] = codes_received
+    
+    if codes_received < total_quantity:
+        # Запрашиваем следующий промокод
+        await update.message.reply_text(
+            f"✅ Промокод {codes_received}/{total_quantity} принят!\n"
+            f"Осталось принять: {total_quantity - codes_received}\n\n"
+            f"Отправьте промокод {codes_received + 1}/{total_quantity}:"
+        )
+    else:
+        # Все промокоды получены
+        context.user_data["new_promocode_code"] = context.user_data['batch_codes']
+        context.user_data['adding_promocode'] = 'waiting_photo'
+        
+        await update.message.reply_text(
+            f"✅ Все {total_quantity} промокодов приняты!\n\n"
+            f"Теперь отправьте фото для промокодов (или напишите 'пропустить', чтобы добавить без фото):"
+        )
+
+async def add_promocode_step5(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Шаг 5: Получение фото промокода и сохранение"""
+    promo_type = context.user_data.get('promo_type', 'single')
+    
+    if update.message.text and update.message.text.lower() == 'пропустить':
+        photo_id = None
+    elif update.message.photo:
+        # Получаем самое качественное фото
+        photo = update.message.photo[-1]
+        photo_id = photo.file_id
+        
+        # Сохраняем фото локально (опционально)
+        try:
+            photo_file = await update.message.effective_attachment.get_file()
+            await photo_file.download_to_drive(f"{PROMO_PHOTOS_DIR}/{photo.file_id}.jpg")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения фото: {e}")
+    else:
+        await update.message.reply_text("❌ Пожалуйста, отправьте фото или напишите 'пропустить'. Попробуйте еще раз:")
+        return
+    
+    if promo_type == 'batch':
+        # Для множества промокодов создаем отдельные записи
+        batch_codes = context.user_data["new_promocode_code"]
+        total_quantity = len(batch_codes)
+        batch_id = str(uuid4())
+        
+        for i, promo_code in enumerate(batch_codes, 1):
+            promo_id_single = str(uuid4())
+            promocodes_data[promo_id_single] = {
+                "description": context.user_data["new_promocode_description"],
+                "price": context.user_data["new_promocode_price"],
+                "quantity": 1,  # Каждый промокод одноразовый
+                "promocode": promo_code,
+                "photo_id": photo_id,
+                "created_date": datetime.now().isoformat(),
+                "promo_type": "batch",
+                "batch_id": batch_id,
+                "batch_index": i,
+                "batch_total": total_quantity
+            }
+        
+        success_text = f"✅ *{total_quantity} промокодов успешно добавлены в магазин!*\n\n"
+        success_text += (
+            f"🎯 Описание: {context.user_data.get('new_promocode_description', '')}\n"
+            f"💰 Цена за 1 промокод: {context.user_data.get('new_promocode_price', 0)} рефералов\n"
+            f"📦 Количество: {total_quantity} отдельных промокодов\n"
+            f"📝 Промокоды будут выдаваться по одному при покупке\n"
+        )
+        
+    else:
+        # Одиночный или многоразовый промокод
+        promo_id = str(uuid4())
+        quantity = context.user_data["new_promocode_quantity"]
+        promocode = context.user_data["new_promocode_code"]
+        
+        promocodes_data[promo_id] = {
+            "description": context.user_data["new_promocode_description"],
+            "price": context.user_data["new_promocode_price"],
+            "quantity": quantity,
+            "promocode": promocode,
+            "photo_id": photo_id,
+            "created_date": datetime.now().isoformat(),
+            "promo_type": promo_type
+        }
+        
+        quantity_text = "∞ (безлимит)" if quantity == -1 else f"{quantity}"
+        success_text = f"✅ *Промокод успешно добавлен в магазин!*\n\n"
+        success_text += (
+            f"🎯 Описание: {promocodes_data[promo_id]['description']}\n"
+            f"💰 Цена: {promocodes_data[promo_id]['price']} рефералов\n"
+            f"📦 Количество: {quantity_text}\n"
+            f"📝 Промокод: `{promocodes_data[promo_id]['promocode']}`\n"
+        )
+    
+    # Сохраняем данные
+    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    # Очищаем временные данные
+    context.user_data.pop("new_promocode_description", None)
+    context.user_data.pop("new_promocode_price", None)
+    context.user_data.pop("new_promocode_quantity", None)
+    context.user_data.pop("new_promocode_code", None)
+    context.user_data.pop('batch_codes', None)
+    context.user_data.pop('codes_received', None)
+    context.user_data.pop('promo_type', None)
+    context.user_data.pop('adding_promocode', None)
+    
+    photo_status = "✅ с фото" if photo_id else "❌ без фото"
+    success_text += f"🖼️ Статус фото: {photo_status}"
+    
+    await update.message.reply_text(
+        success_text,
+        parse_mode='Markdown'
+    )
+    
+    # Возвращаемся в админ-панель
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить еще промокод", callback_data="admin_add_promocode_new")],
+        [InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="admin_back")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text("Что делаем дальше?", reply_markup=reply_markup)
+
+# Старая функция для совместимости
+async def admin_add_promocode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало добавления нового промокода (старая версия)"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['adding_promocode'] = 'waiting_desc'
+    context.user_data['promo_type'] = 'single'  # По умолчанию одиночный
+    
+    try:
+        await query.edit_message_text(
+            "➕ *Добавление нового промокода*\n\n"
+            "Введите описание промокода (например: 'Скебоб'):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➕ *Добавление нового промокода*\n\nВведите описание промокода (например: 'Скебоб'):",
+            parse_mode='Markdown'
+        )
+
+async def admin_edit_promocodes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список промокодов для редактирования"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not promocodes_data:
+        try:
+            await query.edit_message_text("В магазине пока нет промокодов для редактирования.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="В магазине пока нет промокодов для редактирования."
+            )
+        return
+    
+    keyboard = []
+    for promo_id, promo in promocodes_data.items():
+        quantity_text = "∞" if promo['quantity'] == -1 else f"{promo['quantity']}"
+        photo_status = "🖼️" if promo.get('photo_id') else "📝"
+        promo_type = promo.get('promo_type', 'single')
+        
+        type_icon = "🔵" if promo_type == 'single' else "🟢" if promo_type == 'multi' else "🟡"
+        
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{type_icon} {photo_status} {promo['description']} - {promo['price']} реф. (ост.: {quantity_text})",
+                callback_data=f"edit_promo_{promo_id}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_back")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            "📝 *Выберите промокод для редактирования:*",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="📝 *Выберите промокод для редактирования:*",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def edit_promocode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик редактирования промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    promo_id = query.data.replace("edit_promo_", "")
+    
+    if promo_id not in promocodes_data:
+        try:
+            await query.edit_message_text("Промокод не найден.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="Промокод не найден."
+            )
+        return
+    
+    promo = promocodes_data[promo_id]
+    context.user_data['editing_promocode_id'] = promo_id
+    
+    quantity_text = "∞ (безлимит)" if promo['quantity'] == -1 else f"{promo['quantity']}"
+    photo_status = "✅ Есть фото" if promo.get('photo_id') else "❌ Нет фото"
+    promo_type = promo.get('promo_type', 'single')
+    type_name = "ОДИНОЧНЫЙ" if promo_type == 'single' else "МНОГОРАЗОВЫЙ" if promo_type == 'multi' else "ПАКЕТНЫЙ"
+    
+    keyboard = [
+        [InlineKeyboardButton("✏️ Изменить описание", callback_data=f"change_promo_desc_{promo_id}")],
+        [InlineKeyboardButton("💰 Изменить цену", callback_data=f"change_promo_price_{promo_id}")],
+        [InlineKeyboardButton("📦 Изменить количество", callback_data=f"change_promo_quantity_{promo_id}")],
+        [InlineKeyboardButton("📝 Изменить промокод", callback_data=f"change_promo_code_{promo_id}")],
+        [InlineKeyboardButton("🖼️ Изменить фото", callback_data=f"change_promo_photo_{promo_id}")],
+        [InlineKeyboardButton("❌ Удалить промокод", callback_data=f"delete_promo_{promo_id}")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_edit_promocodes")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            f"✏️ *Редактирование промокода*\n\n"
+            f"🎯 Описание: {promo['description']}\n"
+            f"💰 Цена: {promo['price']} рефералов\n"
+            f"📦 Количество: {quantity_text}\n"
+            f"📝 Промокод: `{promo['promocode']}`\n"
+            f"🖼️ Фото: {photo_status}\n"
+            f"📋 Тип: {type_name}\n\n"
+            f"Выберите действие:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ *Редактирование промокода:*\n\n🎯 Описание: {promo['description']}\n💰 Цена: {promo['price']} рефералов\n📦 Количество: {quantity_text}\n📝 Промокод: `{promo['promocode']}`\n🖼️ Фото: {photo_status}\n📋 Тип: {type_name}\n\nВыберите действие:",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def change_promocode_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Изменение описания промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    promo_id = query.data.replace("change_promo_desc_", "")
+    context.user_data['editing_promocode_id'] = promo_id
+    context.user_data['editing_field'] = 'description'
+    
+    try:
+        await query.edit_message_text(
+            f"✏️ *Изменение описания промокода*\n\n"
+            f"Текущее описание: {promocodes_data[promo_id]['description']}\n\n"
+            f"Введите новое описание:",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ *Изменение описания промокода*\n\nТекущее описание: {promocodes_data[promo_id]['description']}\n\nВведите новое описание:",
+            parse_mode='Markdown'
+        )
+
+async def change_promocode_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Изменение цены промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    promo_id = query.data.replace("change_promo_price_", "")
+    context.user_data['editing_promocode_id'] = promo_id
+    context.user_data['editing_field'] = 'price'
+    
+    try:
+        await query.edit_message_text(
+            f"✏️ *Изменение цены промокода*\n\n"
+            f"Текущая цена: {promocodes_data[promo_id]['price']} рефералов\n\n"
+            f"Введите новую цену:",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ *Изменение цены промокода*\n\nТекущая цена: {promocodes_data[promo_id]['price']} рефералов\n\nВведите новую цену:",
+            parse_mode='Markdown'
+        )
+
+async def change_promocode_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Изменение количества промокодов"""
+    query = update.callback_query
+    await query.answer()
+    
+    promo_id = query.data.replace("change_promo_quantity_", "")
+    context.user_data['editing_promocode_id'] = promo_id
+    context.user_data['editing_field'] = 'quantity'
+    
+    current_qty = promocodes_data[promo_id]['quantity']
+    current_qty_text = "∞ (безлимит)" if current_qty == -1 else f"{current_qty}"
+    
+    try:
+        await query.edit_message_text(
+            f"✏️ *Изменение количества промокодов*\n\n"
+            f"Текущее количество: {current_qty_text}\n\n"
+            f"Введите новое количество (число, или 'бесконечно'):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ *Изменение количества промокодов*\n\nТекущее количество: {current_qty_text}\n\nВведите новое количество (число, или 'бесконечно'):",
+            parse_mode='Markdown'
+        )
+
+async def change_promocode_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Изменение промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    promo_id = query.data.replace("change_promo_code_", "")
+    context.user_data['editing_promocode_id'] = promo_id
+    context.user_data['editing_field'] = 'promocode'
+    
+    try:
+        await query.edit_message_text(
+            f"✏️ *Изменение промокода*\n\n"
+            f"Текущий промокод: `{promocodes_data[promo_id]['promocode']}`\n\n"
+            f"Введите новый промокод:",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ *Изменение промокода*\n\nТекущий промокод: `{promocodes_data[promo_id]['promocode']}`\n\nВведите новый промокод:",
+            parse_mode='Markdown'
+        )
+
+async def change_promocode_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Изменение фото промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    promo_id = query.data.replace("change_promo_photo_", "")
+    context.user_data['editing_promocode_id'] = promo_id
+    context.user_data['editing_field'] = 'photo'
+    
+    current_photo_status = "есть фото" if promocodes_data[promo_id].get('photo_id') else "нет фото"
+    
+    try:
+        await query.edit_message_text(
+            f"✏️ *Изменение фото промокода*\n\n"
+            f"Текущий статус: {current_photo_status}\n\n"
+            f"Отправьте новое фото для промокода (или напишите 'удалить', чтобы удалить текущее фото):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ *Изменение фото промокода*\n\nТекущий статус: {current_photo_status}\n\nОтправьте новое фото для промокода (или напишите 'удалить', чтобы удалить текущее фото):",
+            parse_mode='Markdown'
+        )
+
+async def delete_promocode_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление промокода"""
+    query = update.callback_query
+    await query.answer()
+    
+    promo_id = query.data.replace("delete_promo_", "")
+    
+    if promo_id in promocodes_data:
+        promo_desc = promocodes_data[promo_id]['description']
+        del promocodes_data[promo_id]
+        
+        DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+        
+        try:
+            await query.edit_message_text(
+                f"✅ Промокод '{promo_desc}' успешно удален из магазина!",
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"✅ Промокод '{promo_desc}' успешно удален из магазина!",
+                parse_mode='Markdown'
+            )
+    else:
+        try:
+            await query.edit_message_text("❌ Промокод не найден.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Промокод не найден."
+            )
+
+async def update_promocode_description(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление описания промокода"""
+    promo_id = context.user_data.get('editing_promocode_id')
+    if not promo_id or promo_id not in promocodes_data:
+        await update.message.reply_text("Ошибка: промокод не найден.")
+        return
+    
+    new_description = update.message.text
+    promocodes_data[promo_id]['description'] = new_description
+    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    await update.message.reply_text(
+        f"✅ Описание промокода успешно изменено на: *{new_description}*",
+        parse_mode='Markdown'
+    )
+    
+    context.user_data.pop('editing_promocode_id', None)
+    context.user_data.pop('editing_field', None)
+    
+    # Возвращаемся к редактированию промокодов
+    await admin_edit_promocodes_from_message(update, context)
+
+async def update_promocode_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление цены промокода"""
+    promo_id = context.user_data.get('editing_promocode_id')
+    if not promo_id or promo_id not in promocodes_data:
+        await update.message.reply_text("Ошибка: промокод не найден.")
+        return
+    
+    try:
+        new_price = int(update.message.text)
+        if new_price <= 0:
+            await update.message.reply_text("❌ Цена должна быть больше 0.")
+            return
+        
+        promocodes_data[promo_id]['price'] = new_price
+        DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+        
+        await update.message.reply_text(
+            f"✅ Цена промокода успешно изменена на: *{new_price} рефералов*",
+            parse_mode='Markdown'
+        )
+        
+        context.user_data.pop('editing_promocode_id', None)
+        context.user_data.pop('editing_field', None)
+        
+        # Возвращаемся к редактированию промокодов
+        await admin_edit_promocodes_from_message(update, context)
+    except ValueError:
+        await update.message.reply_text("❌ Пожалуйста, введите целое число.")
+
+async def update_promocode_quantity(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление количества промокодов"""
+    promo_id = context.user_data.get('editing_promocode_id')
+    if not promo_id or promo_id not in promocodes_data:
+        await update.message.reply_text("Ошибка: промокод не найден.")
+        return
+    
+    quantity_input = update.message.text.strip().lower()
+    
+    if quantity_input == 'бесконечно' or quantity_input == 'inf' or quantity_input == 'бесконечное':
+        new_quantity = -1
+    else:
+        try:
+            new_quantity = int(quantity_input)
+            if new_quantity < 0:
+                await update.message.reply_text("❌ Количество не может быть отрицательным.")
+                return
+        except ValueError:
+            await update.message.reply_text("❌ Пожалуйста, введите число или 'бесконечно'.")
+            return
+    
+    promocodes_data[promo_id]['quantity'] = new_quantity
+    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    quantity_text = "∞ (безлимит)" if new_quantity == -1 else f"{new_quantity}"
+    
+    await update.message.reply_text(
+        f"✅ Количество промокодов успешно изменено на: *{quantity_text}*",
+        parse_mode='Markdown'
+    )
+    
+    context.user_data.pop('editing_promocode_id', None)
+    context.user_data.pop('editing_field', None)
+    
+    # Возвращаемся к редактированию промокодов
+    await admin_edit_promocodes_from_message(update, context)
+
+async def update_promocode_code(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление промокода"""
+    promo_id = context.user_data.get('editing_promocode_id')
+    if not promo_id or promo_id not in promocodes_data:
+        await update.message.reply_text("Ошибка: промокод не найден.")
+        return
+    
+    new_promocode = update.message.text.strip()
+    promocodes_data[promo_id]['promocode'] = new_promocode
+    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    await update.message.reply_text(
+        f"✅ Промокод успешно изменен на: `{new_promocode}`",
+        parse_mode='Markdown'
+    )
+    
+    context.user_data.pop('editing_promocode_id', None)
+    context.user_data.pop('editing_field', None)
+    
+    # Возвращаемся к редактированию промокодов
+    await admin_edit_promocodes_from_message(update, context)
+
+async def update_promocode_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обновление фото промокода"""
+    promo_id = context.user_data.get('editing_promocode_id')
+    if not promo_id or promo_id not in promocodes_data:
+        await update.message.reply_text("Ошибка: промокод не найден.")
+        return
+    
+    if update.message.text and update.message.text.lower() == 'удалить':
+        # Удаляем фото
+        promocodes_data[promo_id].pop('photo_id', None)
+        DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+        
+        await update.message.reply_text(
+            f"✅ Фото промокода успешно удалено!",
+            parse_mode='Markdown'
+        )
+    elif update.message.photo:
+        # Обновляем фото
+        photo = update.message.photo[-1]
+        photo_id = photo.file_id
+        
+        # Сохраняем фото локально (опционально)
+        try:
+            photo_file = await update.message.effective_attachment.get_file()
+            await photo_file.download_to_drive(f"{PROMO_PHOTOS_DIR}/{photo.file_id}.jpg")
+        except Exception as e:
+            logger.error(f"Ошибка сохранения фото: {e}")
+        
+        promocodes_data[promo_id]['photo_id'] = photo_id
+        DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+        
+        await update.message.reply_text(
+            f"✅ Фото промокода успешно обновлено!",
+            parse_mode='Markdown'
+        )
+    else:
+        await update.message.reply_text("❌ Пожалуйста, отправьте фото или напишите 'удалить'. Попробуйте еще раз:")
+        return
+    
+    context.user_data.pop('editing_promocode_id', None)
+    context.user_data.pop('editing_field', None)
+    
+    # Возвращаемся к редактированию промокодов
+    await admin_edit_promocodes_from_message(update, context)
+
+async def admin_edit_promocodes_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает список промокодов для редактирования из сообщения"""
+    if not promocodes_data:
+        await update.message.reply_text("В магазине пока нет промокодов для редактирования.")
+        return
+    
+    keyboard = []
+    for promo_id, promo in promocodes_data.items():
+        quantity_text = "∞" if promo['quantity'] == -1 else f"{promo['quantity']}"
+        photo_status = "🖼️" if promo.get('photo_id') else "📝"
+        promo_type = promo.get('promo_type', 'single')
+        
+        type_icon = "🔵" if promo_type == 'single' else "🟢" if promo_type == 'multi' else "🟡"
+        
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{type_icon} {photo_status} {promo['description']} - {promo['price']} реф. (ост.: {quantity_text})",
+                callback_data=f"edit_promo_{promo_id}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад в админ-панель", callback_data="admin_back")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        "📝 *Выберите промокод для редактирования:*",
+        parse_mode='Markdown',
+        reply_markup=reply_markup
+    )
+
+async def admin_manage_admins(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Управление администраторами"""
+    query = update.callback_query
+    await query.answer()
+    
+    admin_list_text = "👑 *Список администраторов:*\n\n"
+    
+    for i, admin in enumerate(admins_list, 1):
+        username = admin.get("username", "без юзернейма")
+        added_by = admin.get("added_by", "неизвестно")
+        admin_list_text += f"{i}. ID: `{admin['user_id']}` | @{escape_markdown(username)}\n"
+        admin_list_text += f"   Добавлен: {escape_markdown(added_by)}\n\n"
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить админа", callback_data="admin_add_admin")],
+        [InlineKeyboardButton("➖ Удалить админа", callback_data="admin_remove_admin")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            admin_list_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=admin_list_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def admin_add_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление администратора"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['waiting_admin_username'] = True
+    
+    try:
+        await query.edit_message_text(
+            "👑 *Добавление администратора*\n\n"
+            "Введите юзернейм нового администратора (например: @username или просто username):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="👑 *Добавление администратора*\n\nВведите юзернейм нового администратора (например: @username или просто username):",
+            parse_mode='Markdown'
+        )
+
+async def add_admin_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик добавления администратора"""
+    username_input = update.message.text.strip().replace('@', '')
+    
+    # Ищем пользователя в базе данных
+    user_id_to_add = None
+    found_username = None
+    
+    for uid, data in user_data.items():
+        if data.get("username") and data["username"].lower() == username_input.lower():
+            user_id_to_add = uid
+            found_username = data["username"]
+            break
+    
+    if not user_id_to_add:
+        await update.message.reply_text(
+            f"❌ Пользователь @{username_input} не найден в базе данных бота.\n"
+            f"Пользователь должен сначала запустить бота через /start"
+        )
+        context.user_data.pop('waiting_admin_username', None)
+        return
+    
+    # Проверяем, является ли уже администратором
+    if is_admin(user_id_to_add):
+        await update.message.reply_text(
+            f"❌ Пользователь @{found_username} уже является администратором."
+        )
+        context.user_data.pop('waiting_admin_username', None)
+        return
+    
+    adder_id = str(update.effective_user.id)
+    adder_username = update.effective_user.username
+    
+    # Добавляем администратора
+    admins_list.append({
+        "user_id": str(user_id_to_add),
+        "username": found_username,
+        "added_by": f"@{adder_username}" if adder_username else f"ID: {adder_id}",
+        "added_date": datetime.now().isoformat()
+    })
+    
+    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    await update.message.reply_text(
+        f"✅ Администратор успешно добавлен!\n"
+        f"👤 Юзернейм: @{found_username}\n"
+        f"🆔 ID: `{user_id_to_add}`"
+    )
+    
+    context.user_data.pop('waiting_admin_username', None)
+    
+    try:
+        await context.bot.send_message(
+            chat_id=int(user_id_to_add),
+            text=f"🎉 Вас назначили администратором бота *{get_bot_name()}*!\n"
+                 f"Теперь вам доступна админ-панель.",
+            parse_mode='Markdown'
+        )
+    except:
+        pass
+
+async def admin_remove_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление администратора"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Создаем список администраторов для удаления (кроме системных)
+    removable_admins = [admin for admin in admins_list if admin.get("added_by") != "system"]
+    
+    if not removable_admins:
+        try:
+            await query.edit_message_text("❌ Нет администраторов для удаления (только системные).")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Нет администраторов для удаления (только системные)."
+            )
+        return
+    
+    keyboard = []
+    for admin in removable_admins:
+        username = admin.get("username", "без юзернейма")
+        keyboard.append([
+            InlineKeyboardButton(
+                f"@{username} (ID: {admin['user_id']})",
+                callback_data=f"remove_admin_{admin['user_id']}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_manage_admins")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            "➖ *Выберите администратора для удаления:*\n\n"
+            "⚠️ Системные администраторы не могут быть удалены.",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➖ *Выберите администратора для удаления:*\n\n⚠️ Системные администраторы не могут быть удалены.",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def remove_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик удаления администратора"""
+    query = update.callback_query
+    await query.answer()
+    
+    admin_id = query.data.replace("remove_admin_", "")
+    
+    # Ищем и удаляем администратора
+    removed = False
+    for i, admin in enumerate(admins_list):
+        if admin["user_id"] == admin_id and admin.get("added_by") != "system":
+            admins_list.pop(i)
+            DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+            removed = True
+            break
+    
+    if removed:
+        try:
+            await query.edit_message_text(
+                f"✅ Администратор с ID `{admin_id}` успешно удален.",
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"✅ Администратор с ID `{admin_id}` успешно удален.",
+                parse_mode='Markdown'
+            )
+    else:
+        try:
+            await query.edit_message_text(
+                f"❌ Не удалось удалить администратора. Возможно, это системный администратор.",
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"❌ Не удалось удалить администратора. Возможно, это системный администратор.",
+                parse_mode='Markdown'
+            )
+
+async def admin_manage_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Управление обязательными каналами"""
+    query = update.callback_query
+    await query.answer()
+    
+    channels_text = "📢 *Обязательные каналы для подписки:*\n\n"
+    
+    if not channels_list:
+        channels_text += "⚠️ Нет обязательных каналов\n"
+    else:
+        for i, channel in enumerate(channels_list, 1):
+            channels_text += (
+                f"{i}. *{escape_markdown(channel.get('channel_title', 'Канал'))}*\n"
+                f"   Юзернейм: @{channel.get('channel_username', '')}\n"
+                f"   ID: `{channel['channel_id']}`\n"
+                f"   Добавлен: {escape_markdown(channel.get('added_by', 'неизвестно'))}\n\n"
+            )
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить канал", callback_data="admin_add_channel")],
+        [InlineKeyboardButton("➖ Удалить канал", callback_data="admin_remove_channel")],
+        [InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            channels_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=channels_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def admin_add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление обязательного канала"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['waiting_channel'] = True
+    
+    try:
+        await query.edit_message_text(
+            "📢 *Добавление обязательного канала*\n\n"
+            "Отправьте ссылку на канал или его юзернейм (например: @channel_name или https://t.me/channel_name):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="📢 *Добавление обязательного канала*\n\nОтправьте ссылку на канал или его юзернейм (например: @channel_name или https://t.me/channel_name):",
+            parse_mode='Markdown'
+        )
+
+async def add_channel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик добавления канала"""
+    channel_input = update.message.text.strip()
+    
+    # Извлекаем юзернейм из разных форматов
+    if "t.me/" in channel_input:
+        # Убираем https:// и т.д.
+        channel_input = channel_input.replace("https://", "").replace("http://", "")
+        if "t.me/" in channel_input:
+            channel_username = channel_input.split("t.me/")[-1].split("?")[0].strip("/")
+        else:
+            channel_username = channel_input.strip("/")
+    elif channel_input.startswith("@"):
+        channel_username = channel_input[1:]
+    else:
+        channel_username = channel_input
+    
+    try:
+        # Получаем информацию о канале
+        chat = await context.bot.get_chat(f"@{channel_username}")
+        
+        if chat.type not in ["channel", "group", "supergroup"]:
+            await update.message.reply_text("❌ Указанный чат не является каналом или группой.")
+            context.user_data.pop('waiting_channel', None)
+            return
+        
+        channel_id = str(chat.id)
+        channel_title = chat.title
+        
+        # Проверяем, является ли бот администратором (пробуем получить участников)
+        bot_is_admin = False
+        try:
+            # Пробуем получить информацию о боте в канале
+            bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
+            if bot_member.status in [ChatMember.ADMINISTRATOR, ChatMember.OWNER]:
+                bot_is_admin = True
+                logger.info(f"Бот является администратором канала {channel_id}")
+            else:
+                logger.warning(f"Бот не является администратором канала {channel_id}. Статус: {bot_member.status}")
+        except Exception as e:
+            logger.warning(f"Не удалось проверить права бота в канале {channel_id}: {e}")
+            bot_is_admin = False
+        
+        # Добавляем канал
+        adder_id = str(update.effective_user.id)
+        adder_username = update.effective_user.username
+        
+        # Проверяем, не добавлен ли уже этот канал
+        if any(channel["channel_id"] == channel_id for channel in channels_list):
+            await update.message.reply_text("❌ Этот канал уже добавлен в список обязательных.")
+            context.user_data.pop('waiting_channel', None)
+            return
+        
+        channels_list.append({
+            "channel_id": channel_id,
+            "channel_username": channel_username,
+            "channel_title": channel_title,
+            "added_by": f"@{adder_username}" if adder_username else f"ID: {adder_id}",
+            "added_date": datetime.now().isoformat(),
+            "bot_is_admin": bot_is_admin
+        })
+        
+        DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+        
+        admin_status = "✅ Бот является администратором" if bot_is_admin else "⚠️ Бот НЕ является администратором (проверка подписок может не работать)"
+        
+        await update.message.reply_text(
+            f"✅ Канал успешно добавлен!\n\n"
+            f"📢 Название: *{escape_markdown(channel_title)}*\n"
+            f"👤 Юзернейм: @{channel_username}\n"
+            f"🆔 ID: `{channel_id}`\n"
+            f"{admin_status}\n\n"
+            f"Теперь все пользователи должны подписаться на этот канал для использования бота.",
+            parse_mode='Markdown'
+        )
+        
+        context.user_data.pop('waiting_channel', None)
+        
+    except Exception as e:
+        logger.error(f"Ошибка добавления канала: {e}")
+        await update.message.reply_text(
+            "❌ Не удалось добавить канал.\n"
+            "Убедитесь, что:\n"
+            "1. Канал существует и публичный\n"
+            "2. Бот может видеть канал\n"
+            "3. Вы правильно указали юзернейм или ссылку\n\n"
+            f"Ошибка: {str(e)}"
+        )
+        context.user_data.pop('waiting_channel', None)
+
+async def admin_remove_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Удаление обязательного канала"""
+    query = update.callback_query
+    await query.answer()
+    
+    if not channels_list:
+        try:
+            await query.edit_message_text("❌ Нет каналов для удаления.")
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Нет каналов для удаления."
+            )
+        return
+    
+    keyboard = []
+    for channel in channels_list:
+        channel_title = channel.get('channel_title', 'Канал')
+        channel_username = channel.get('channel_username', '')
+        bot_admin_status = "✅" if channel.get('bot_is_admin', False) else "❌"
+        
+        keyboard.append([
+            InlineKeyboardButton(
+                f"{bot_admin_status} {channel_title} (@{channel_username})",
+                callback_data=f"remove_channel_{channel['channel_id']}"
+            )
+        ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="admin_manage_channels")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(
+            "➖ *Выберите канал для удаления:*\n"
+            "✅ - бот администратор, ❌ - бот не администратор",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➖ *Выберите канал для удаления:*\n✅ - бот администратор, ❌ - бот не администратор",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def remove_channel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик удаления канала"""
+    query = update.callback_query
+    await query.answer()
+    
+    channel_id = query.data.replace("remove_channel_", "")
+    
+    # Ищем канал для удаления
+    channel_info = None
+    for i, channel in enumerate(channels_list):
+        if channel["channel_id"] == channel_id:
+            channel_info = channel
+            channels_list.pop(i)
+            DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+            break
+    
+    if channel_info:
+        try:
+            await query.edit_message_text(
+                f"✅ Канал успешно удален!\n\n"
+                f"📢 Название: *{escape_markdown(channel_info.get('channel_title', 'Канал'))}*\n"
+                f"👤 Юзернейм: @{channel_info.get('channel_username', '')}\n\n"
+                f"Теперь пользователям не нужно подписываться на этот канал.",
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=f"✅ Канал успешно удален!\n\n📢 Название: *{channel_info.get('channel_title', 'Канал')}*\n👤 Юзернейм: @{channel_info.get('channel_username', '')}\n\nТеперь пользователям не нужно подписываться на этот канал.",
+                parse_mode='Markdown'
+            )
+    else:
+        try:
+            await query.edit_message_text(
+                "❌ Не удалось удалить канал.",
+                parse_mode='Markdown'
+            )
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="❌ Не удалось удалить канал.",
+                parse_mode='Markdown'
+            )
+
+async def admin_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Начало рассылки - просто отправь фото или текст"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['waiting_broadcast'] = True
+    
+    try:
+        await query.edit_message_text(
+            "📢 *Создание рассылки*\n\n"
+            "Просто отправьте:\n"
+            "• Текст - для текстовой рассылки\n"
+            "• Фото - для рассылки с фото (можно с подписью)\n\n"
+            "ℹ️ Текст поддерживает Markdown\n"
+            "⚠️ Рассылка будет отправлена всем пользователям бота",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="📢 *Создание рассылки*\n\nПросто отправьте:\n• Текст - для текстовой рассылки\n• Фото - для рассылки с фото (можно с подписью)\n\nℹ️ Текст поддерживает Markdown\n⚠️ Рассылка будет отправлена всем пользователям бота",
+            parse_mode='Markdown'
+        )
+
+async def broadcast_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик рассылки - автоматически определяет тип"""
+    # Проверяем, есть ли фото
+    if update.message.photo:
+        # Рассылка с фото
+        photo = update.message.photo[-1]
+        caption = update.message.caption or ""
+        
+        context.user_data['broadcast_photo_id'] = photo.file_id
+        context.user_data['broadcast_caption'] = caption
+        context.user_data['broadcast_type'] = 'photo'
+        context.user_data.pop('waiting_broadcast', None)
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, отправить", callback_data="confirm_broadcast")],
+            [InlineKeyboardButton("❌ Нет, отменить", callback_data="cancel_broadcast")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if caption:
+            preview_text = f"🖼️ *Предпросмотр рассылки с фото:*\n\nПодпись: {caption}\n\n"
+        else:
+            preview_text = "🖼️ *Предпросмотр рассылки с фото:*\n\n(без подписи)\n\n"
+        
+        preview_text += f"*Отправить это фото всем {len(user_data)} пользователям?*"
+        
+        # Отправляем предпросмотр с текстом (не только фото)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=preview_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+        
+    else:
+        # Текстовая рассылка
+        message_text = update.message.text
+        
+        if not message_text:
+            await update.message.reply_text("❌ Пожалуйста, отправьте текст или фото для рассылки.")
+            return
+        
+        context.user_data['broadcast_message'] = message_text
+        context.user_data['broadcast_type'] = 'text'
+        context.user_data.pop('waiting_broadcast', None)
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, отправить", callback_data="confirm_broadcast")],
+            [InlineKeyboardButton("❌ Нет, отменить", callback_data="cancel_broadcast")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            f"📢 *Предпросмотр текстовой рассылки:*\n\n"
+            f"{message_text}\n\n"
+            f"*Отправить это сообщение всем {len(user_data)} пользователям?*",
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def confirm_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Подтверждение и отправка рассылки"""
+    query = update.callback_query
+    await query.answer()
+    
+    broadcast_type = context.user_data.get('broadcast_type', 'text')
+    
+    # Пробуем отредактировать сообщение, если это возможно
+    try:
+        if broadcast_type == 'text':
+            await query.edit_message_text("📤 *Начинаю текстовую рассылку...*", parse_mode='Markdown')
+        elif broadcast_type == 'photo':
+            await query.edit_message_text("📤 *Начинаю рассылку с фото...*", parse_mode='Markdown')
+    except Exception as e:
+        # Если не удалось отредактировать, отправляем новое сообщение
+        logger.warning(f"Не удалось отредактировать сообщение: {e}")
+        if broadcast_type == 'text':
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="📤 *Начинаю текстовую рассылку...*",
+                parse_mode='Markdown'
+            )
+        elif broadcast_type == 'photo':
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text="📤 *Начинаю рассылку с фото...*",
+                parse_mode='Markdown'
+            )
+    
+    if broadcast_type == 'text':
+        message_text = context.user_data.get('broadcast_message', '')
+        
+        if not message_text:
+            try:
+                await query.edit_message_text("❌ Сообщение для рассылки не найдено.")
+            except:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text="❌ Сообщение для рассылки не найдено."
+                )
+            return
+        
+        successful = 0
+        failed = 0
+        total = len(user_data)
+        
+        for i, (user_id, _) in enumerate(user_data.items(), 1):
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=message_text,
+                    parse_mode='Markdown'
+                )
+                successful += 1
+                
+                if i % 20 == 0:
+                    await asyncio.sleep(1)
+                    
+            except Exception as e:
+                failed += 1
+                logger.error(f"Ошибка отправки текста пользователю {user_id}: {e}")
+        
+        context.user_data.pop('broadcast_message', None)
+        
+        # Отправляем результат
+        result_text = (
+            f"✅ *Текстовая рассылка завершена!*\n\n"
+            f"📊 Статистика:\n"
+            f"• Всего пользователей: {total}\n"
+            f"• Успешно отправлено: {successful}\n"
+            f"• Не удалось отправить: {failed}"
+        )
+        
+        try:
+            await query.edit_message_text(result_text, parse_mode='Markdown')
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=result_text,
+                parse_mode='Markdown'
+            )
+        
+    elif broadcast_type == 'photo':
+        photo_id = context.user_data.get('broadcast_photo_id')
+        caption = context.user_data.get('broadcast_caption', '')
+        
+        if not photo_id:
+            try:
+                await query.edit_message_text("❌ Фото для рассылки не найдено.")
+            except:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text="❌ Фото для рассылки не найдено."
+                )
+            return
+        
+        successful = 0
+        failed = 0
+        total = len(user_data)
+        
+        for i, (user_id, _) in enumerate(user_data.items(), 1):
+            try:
+                await context.bot.send_photo(
+                    chat_id=int(user_id),
+                    photo=photo_id,
+                    caption=caption if caption else None,
+                    parse_mode='Markdown' if caption else None
+                )
+                successful += 1
+                
+                if i % 20 == 0:
+                    await asyncio.sleep(1)
+                    
+            except Exception as e:
+                failed += 1
+                logger.error(f"Ошибка отправки фото пользователю {user_id}: {e}")
+        
+        context.user_data.pop('broadcast_photo_id', None)
+        context.user_data.pop('broadcast_caption', None)
+        
+        # Отправляем результат
+        result_text = (
+            f"✅ *Рассылка с фото завершена!*\n\n"
+            f"📊 Статистика:\n"
+            f"• Всего пользователей: {total}\n"
+            f"• Успешно отправлено: {successful}\n"
+            f"• Не удалось отправить: {failed}"
+        )
+        
+        try:
+            await query.edit_message_text(result_text, parse_mode='Markdown')
+        except:
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=result_text,
+                parse_mode='Markdown'
+            )
+    
+    # Очищаем временные данные
+    context.user_data.pop('broadcast_type', None)
+
+async def cancel_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отмена рассылки"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Очищаем все временные данные
+    context.user_data.pop('broadcast_message', None)
+    context.user_data.pop('broadcast_photo_id', None)
+    context.user_data.pop('broadcast_caption', None)
+    context.user_data.pop('broadcast_type', None)
+    context.user_data.pop('waiting_broadcast', None)
+    
+    try:
+        await query.edit_message_text("❌ Рассылка отменена.")
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="❌ Рассылка отменена."
+        )
+
+async def admin_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает статистику бота (исключая скрытого пользователя)"""
+    query = update.callback_query
+    await query.answer()
+    
+    # Исключаем скрытого пользователя из статистики
+    visible_users = {uid: data for uid, data in user_data.items() if not is_hidden_user(uid)}
+    hidden_users = {uid: data for uid, data in user_data.items() if is_hidden_user(uid)}
+    
+    total_users = len(visible_users)
+    total_referrals = sum(len(user["referrals"]) for user in visible_users.values())
+    active_users = sum(1 for user in visible_users.values() if len(user["referrals"]) > 0)
+    total_balance = sum(user.get("balance", 0) for user in visible_users.values())
+    
+    # Считаем общее количество рефералов скрытых пользователей
+    hidden_referrals = 0
+    hidden_balance = 0
+    for user_id, data in hidden_users.items():
+        hidden_referrals += data.get("total_referrals_count", 0)
+        hidden_balance += data.get("balance", 0)
+    
+    # Топ рефереров (исключая администраторов и скрытого пользователя)
+    top_referrers = []
+    for uid, data in visible_users.items():
+        if not is_admin(uid):  # Исключаем администраторов
+            referrals_count = len(data["referrals"])
+            if referrals_count > 0:
+                username = data.get("username", f"User {uid}")
+                if username and username.startswith("User ID:"):
+                    display_name = f"ID: {uid}"
+                else:
+                    display_name = f"@{username}" if username else f"ID: {uid}"
+                
+                referral_network = data.get("referral_network", referrals_count)
+                balance = data.get("balance", 0)
+                
+                top_referrers.append({
+                    "user_id": uid,
+                    "username": display_name,
+                    "referrals_count": referrals_count,
+                    "referral_network": referral_network,
+                    "balance": balance
+                })
+    
+    top_referrers.sort(key=lambda x: x["referrals_count"], reverse=True)
+    
+    # Подсчет новых пользователей за последние 30 дней
+    month_ago = datetime.now().timestamp() - (30 * 24 * 60 * 60)
+    new_users_month = 0
+    for user in visible_users.values():
+        try:
+            joined_date = datetime.fromisoformat(user.get("joined_date", ""))
+            if joined_date.timestamp() > month_ago:
+                new_users_month += 1
+        except:
+            pass
+    
+    # Подсчет покупок
+    total_purchases = 0
+    for user in visible_users.values():
+        total_purchases += len(user.get("purchased_promocodes", []))
+    
+    stats_text = (
+        f"📊 *Статистика бота*\n\n"
+        f"👥 Всего пользователей: {total_users} (скрытых: {len(hidden_users)})\n"
+        f"📈 Новых за 30 дней: {new_users_month}\n"
+        f"📈 Активных пользователей: {active_users}\n"
+        f"🔗 Всего рефералов: {total_referrals:,}\n"
+        f"🔗 Скрытых рефералов: {hidden_referrals:,}\n"
+        f"🔗 Всего рефералов (всех): {total_referrals + hidden_referrals:,}\n"
+        f"💰 Общий баланс рефералов: {total_balance:,}\n"
+        f"💰 Скрытый баланс: {hidden_balance:,}\n"
+        f"🛒 Всего покупок: {total_purchases}\n"
+        f"🎁 Промокодов в магазине: {len(promocodes_data)}\n"
+        f"👑 Администраторов: {len(admins_list)}\n"
+        f"📢 Обязательных каналов: {len(channels_list)}\n\n"
+        f"🏆 *Топ 10 рефереров (без админов и скрытых):*\n"
+    )
+    
+    if top_referrers:
+        for i, user in enumerate(top_referrers[:10], 1):
+            medal = ""
+            if i == 1:
+                medal = "🥇 "
+            elif i == 2:
+                medal = "🥈 "
+            elif i == 3:
+                medal = "🥉 "
+            
+            stats_text += f"{medal}{i}. {user['username']}\n"
+            stats_text += f"   └ Прямых рефералов: {user['referrals_count']:,}\n"
+            stats_text += f"   └ Сеть рефералов: {user['referral_network']:,}\n"
+            stats_text += f"   └ Баланс: {user['balance']:,} рефералов\n"
+    else:
+        stats_text += "Пока нет активных рефереров\n"
+    
+    keyboard = [[InlineKeyboardButton("🔙 Назад", callback_data="admin_back")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    try:
+        await query.edit_message_text(stats_text, parse_mode='Markdown', reply_markup=reply_markup)
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=stats_text,
+            parse_mode='Markdown',
+            reply_markup=reply_markup
+        )
+
+async def admin_change_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Запрос на изменение названия бота"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['waiting_bot_name'] = True
+    
+    try:
+        await query.edit_message_text(
+            f"✏️ *Изменение названия бота*\n\n"
+            f"Текущее название: *{escape_markdown(get_bot_name())}*\n\n"
+            f"Введите новое название бота:",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=f"✏️ *Изменение названия бота*\n\nТекущее название: *{escape_markdown(get_bot_name())}*\n\nВведите новое название бота:",
+            parse_mode='Markdown'
+        )
+
+async def change_bot_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Изменение названия бота"""
+    new_name = update.message.text.strip()
+    
+    if not new_name:
+        await update.message.reply_text("❌ Название не может быть пустым.")
+        context.user_data.pop('waiting_bot_name', None)
+        return
+    
+    bot_config["bot_name"] = new_name
+    DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+    
+    await update.message.reply_text(
+        f"✅ Название бота успешно изменено на: *{escape_markdown(new_name)}*",
+        parse_mode='Markdown'
+    )
+    
+    context.user_data.pop('waiting_bot_name', None)
+
+async def admin_add_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Добавление рефералов пользователю"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['waiting_add_referrals'] = True
+    
+    try:
+        await query.edit_message_text(
+            "➕ *Добавление рефералов*\n\n"
+            "Введите данные пользователя одним из способов:\n"
+            "1. Юзернейм (например: @username)\n"
+            "2. ID пользователя (например: 1234567890)\n\n"
+            "Затем введите количество рефералов для добавления (целое число):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➕ *Добавление рефералов*\n\nВведите данные пользователя одним из способов:\n1. Юзернейм (например: @username)\n2. ID пользователя (например: 1234567890)\n\nЗатем введите количество рефералов для добавления (целое число):",
+            parse_mode='Markdown'
+        )
+
+async def admin_remove_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отнятие рефералов у пользователя"""
+    query = update.callback_query
+    await query.answer()
+    
+    context.user_data['waiting_remove_referrals'] = True
+    
+    try:
+        await query.edit_message_text(
+            "➖ *Отнятие рефералов*\n\n"
+            "Введите данные пользователя одним из способов:\n"
+            "1. Юзернейм (например: @username)\n"
+            "2. ID пользователя (например: 1234567890)\n\n"
+            "Затем введите количество рефералов для отнятия (целое число):",
+            parse_mode='Markdown'
+        )
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="➖ *Отнятие рефералов*\n\nВведите данные пользователя одним из способов:\n1. Юзернейм (например: @username)\n2. ID пользователя (например: 1234567890)\n\nЗатем введите количество рефералов для отнятия (целое число):",
+            parse_mode='Markdown'
+        )
+
+async def process_add_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик добавления рефералов"""
+    text = update.message.text.strip()
+    
+    if 'user_identifier' not in context.user_data:
+        # Первое сообщение - идентификатор пользователя
+        user_identifier = text
+        
+        # Определяем тип идентификатора
+        if user_identifier.startswith('@'):
+            # Юзернейм
+            username = user_identifier[1:].lower()
+            user_id = None
+            
+            for uid, data in user_data.items():
+                if data.get("username") and data["username"].lower() == username:
+                    user_id = uid
+                    break
+            
+            if not user_id:
+                await update.message.reply_text(
+                    f"❌ Пользователь @{username} не найден в базе данных бота.\n"
+                    f"Пользователь должен сначала запустить бота через /start"
+                )
+                context.user_data.pop('waiting_add_referrals', None)
+                return
+            
+            context.user_data['user_identifier'] = user_id
+            context.user_data['username'] = username
+            
+        elif user_identifier.isdigit():
+            # ID пользователя
+            user_id = user_identifier
+            
+            if user_id not in user_data:
+                await update.message.reply_text(
+                    f"❌ Пользователь с ID {user_id} не найден в базе данных бота.\n"
+                    f"Пользователь должен сначала запустить бота через /start"
+                )
+                context.user_data.pop('waiting_add_referrals', None)
+                return
+            
+            context.user_data['user_identifier'] = user_id
+            context.user_data['username'] = user_data[user_id].get('username', 'без юзернейма')
+            
+        else:
+            # Неизвестный формат
+            await update.message.reply_text(
+                "❌ Неверный формат данных. Используйте:\n"
+                "• Юзернейм (например: @username)\n"
+                "• ID пользователя (например: 1234567890)"
+            )
+            return
+        
+        # Используем escape_markdown для username
+        safe_username = escape_markdown(context.user_data['username'])
+        
+        await update.message.reply_text(
+            f"✅ Пользователь найден!\n"
+            f"👤 ID: `{context.user_data['user_identifier']}`\n"
+            f"👤 Юзернейм: @{safe_username}\n\n"
+            f"Теперь введите количество рефералов для добавления (целое положительное число):"
+        )
+        
+    else:
+        # Второе сообщение - количество рефералов
+        try:
+            referrals_to_add = int(text)
+            if referrals_to_add <= 0:
+                await update.message.reply_text("❌ Количество должно быть положительным числом.")
+                return
+            
+            user_id = context.user_data['user_identifier']
+            username = context.user_data['username']
+            
+            # Получаем текущие значения
+            current_total = user_data[user_id].get("total_referrals_count", 0)
+            current_balance = user_data[user_id].get("balance", 0)
+            
+            # Обновляем данные
+            user_data[user_id]["total_referrals_count"] = current_total + referrals_to_add
+            user_data[user_id]["balance"] = current_balance + referrals_to_add
+            
+            # Обновляем сеть рефералов
+            await update_referral_network(user_id)
+            
+            DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+            
+            # Отправляем сообщение пользователю
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=f"🎉 Администратор добавил вам *{referrals_to_add}* рефералов!\n\n"
+                         f"📊 Теперь у вас:\n"
+                         f"• Всего рефералов: *{user_data[user_id]['total_referrals_count']:,}*\n"
+                         f"• Баланс: *{user_data[user_id]['balance']:,} рефералов*",
+                    parse_mode='Markdown'
+                )
+            except:
+                pass
+            
+            # Используем escape_markdown для username в отчете администратору
+            safe_username = escape_markdown(username)
+            
+            # Отправляем отчет администратору
+            await update.message.reply_text(
+                f"✅ Рефералы успешно добавлены!\n\n"
+                f"👤 Пользователь: @{safe_username} (ID: `{user_id}`)\n"
+                f"➕ Добавлено: *{referrals_to_add}* рефералов\n"
+                f"📊 Теперь у пользователя:\n"
+                f"• Всего рефералов: *{user_data[user_id]['total_referrals_count']:,}*\n"
+                f"• Баланс: *{user_data[user_id]['balance']:,} рефералов*",
+                parse_mode='Markdown'
+            )
+            
+            # Очищаем временные данные
+            context.user_data.pop('waiting_add_referrals', None)
+            context.user_data.pop('user_identifier', None)
+            context.user_data.pop('username', None)
+            
+        except ValueError:
+            await update.message.reply_text("❌ Пожалуйста, введите целое положительное число.")
+
+async def process_remove_referrals(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик отнятия рефералов"""
+    text = update.message.text.strip()
+    
+    if 'user_identifier' not in context.user_data:
+        # Первое сообщение - идентификатор пользователя
+        user_identifier = text
+        
+        # Определяем тип идентификатора
+        if user_identifier.startswith('@'):
+            # Юзернейм
+            username = user_identifier[1:].lower()
+            user_id = None
+            
+            for uid, data in user_data.items():
+                if data.get("username") and data["username"].lower() == username:
+                    user_id = uid
+                    break
+            
+            if not user_id:
+                await update.message.reply_text(
+                    f"❌ Пользователь @{username} не найден в базе данных бота.\n"
+                    f"Пользователь должен сначала запустить бота через /start"
+                )
+                context.user_data.pop('waiting_remove_referrals', None)
+                return
+            
+            context.user_data['user_identifier'] = user_id
+            context.user_data['username'] = username
+            
+        elif user_identifier.isdigit():
+            # ID пользователя
+            user_id = user_identifier
+            
+            if user_id not in user_data:
+                await update.message.reply_text(
+                    f"❌ Пользователь с ID {user_id} не найден в базе данных бота.\n"
+                    f"Пользователь должен сначала запустить бота через /start"
+                )
+                context.user_data.pop('waiting_remove_referrals', None)
+                return
+            
+            context.user_data['user_identifier'] = user_id
+            context.user_data['username'] = user_data[user_id].get('username', 'без юзернейма')
+            
+        else:
+            # Неизвестный формат
+            await update.message.reply_text(
+                "❌ Неверный формат данных. Используйте:\n"
+                "• Юзернейм (например: @username)\n"
+                "• ID пользователя (например: 1234567890)"
+            )
+            return
+        
+        # Получаем текущие значения для отображения
+        current_total = user_data[user_id].get("total_referrals_count", 0)
+        current_balance = user_data[user_id].get("balance", 0)
+        
+        # Используем escape_markdown для username
+        safe_username = escape_markdown(context.user_data['username'])
+        
+        await update.message.reply_text(
+            f"✅ Пользователь найден!\n"
+            f"👤 ID: `{context.user_data['user_identifier']}`\n"
+            f"👤 Юзернейм: @{safe_username}\n"
+            f"📊 Текущие данные:\n"
+            f"• Всего рефералов: *{current_total:,}*\n"
+            f"• Баланс: *{current_balance:,} рефералов*\n\n"
+            f"Теперь введите количество рефералов для отнятия (целое положительное число, не больше текущего баланса):"
+        )
+        
+    else:
+        # Второе сообщение - количество рефералов
+        try:
+            referrals_to_remove = int(text)
+            if referrals_to_remove <= 0:
+                await update.message.reply_text("❌ Количество должно быть положительным числом.")
+                return
+            
+            user_id = context.user_data['user_identifier']
+            username = context.user_data['username']
+            
+            # Получаем текущие значения
+            current_total = user_data[user_id].get("total_referrals_count", 0)
+            current_balance = user_data[user_id].get("balance", 0)
+            
+            # Проверяем, достаточно ли рефералов
+            if referrals_to_remove > current_balance:
+                await update.message.reply_text(
+                    f"❌ Нельзя отнять больше рефералов, чем есть у пользователя.\n"
+                    f"У пользователя: *{current_balance}* рефералов\n"
+                    f"Вы пытаетесь отнять: *{referrals_to_remove}*"
+                )
+                return
+            
+            # Обновляем данные
+            new_total = max(0, current_total - referrals_to_remove)
+            new_balance = max(0, current_balance - referrals_to_remove)
+            
+            user_data[user_id]["total_referrals_count"] = new_total
+            user_data[user_id]["balance"] = new_balance
+            
+            # Обновляем сеть рефералов
+            await update_referral_network(user_id)
+            
+            DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+            
+            # Отправляем сообщение пользователю
+            try:
+                await context.bot.send_message(
+                    chat_id=int(user_id),
+                    text=f"⚠️ Администратор отнял у вас *{referrals_to_remove}* рефералов.\n\n"
+                         f"📊 Теперь у вас:\n"
+                         f"• Всего рефералов: *{user_data[user_id]['total_referrals_count']:,}*\n"
+                         f"• Баланс: *{user_data[user_id]['balance']:,} рефералов*",
+                    parse_mode='Markdown'
+                )
+            except:
+                pass
+            
+            # Используем escape_markdown для username в отчете администратору
+            safe_username = escape_markdown(username)
+            
+            # Отправляем отчет администратору
+            await update.message.reply_text(
+                f"✅ Рефералы успешно отняты!\n\n"
+                f"👤 Пользователь: @{safe_username} (ID: `{user_id}`)\n"
+                f"➖ Отнято: *{referrals_to_remove}* рефералов\n"
+                f"📊 Теперь у пользователя:\n"
+                f"• Всего рефералов: *{user_data[user_id]['total_referrals_count']:,}*\n"
+                f"• Баланс: *{user_data[user_id]['balance']:,} рефералов*",
+                parse_mode='Markdown'
+            )
+            
+            # Очищаем временные данные
+            context.user_data.pop('waiting_remove_referrals', None)
+            context.user_data.pop('user_identifier', None)
+            context.user_data.pop('username', None)
+            
+        except ValueError:
+            await update.message.reply_text("❌ Пожалуйста, введите целое положительное число.")
+
+async def admin_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Возврат в главное меню админ-панели"""
+    query = update.callback_query
+    await query.answer()
+    
+    await show_admin_panel_from_callback(update, context)
+
+async def show_admin_panel_from_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показывает админ-панель из callback"""
+    query = update.callback_query
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ Добавить промокод", callback_data="admin_add_promocode_new")],
+        [InlineKeyboardButton("📝 Редактировать промокоды", callback_data="admin_edit_promocodes")],
+        [InlineKeyboardButton("📊 Статистика бота", callback_data="admin_stats")],
+        [InlineKeyboardButton("👑 Управление администраторов", callback_data="admin_manage_admins")],
+        [InlineKeyboardButton("📢 Управление каналами", callback_data="admin_manage_channels")],
+        [InlineKeyboardButton("📢 Сделать рассылку", callback_data="admin_broadcast")],
+        [InlineKeyboardButton("✏️ Изменить название бота", callback_data="admin_change_name")],
+        [InlineKeyboardButton("➕ Добавить рефералы", callback_data="admin_add_referrals")],
+        [InlineKeyboardButton("➖ Отнять рефералы", callback_data="admin_remove_referrals")],
+        [InlineKeyboardButton("❌ Закрыть админ-панель", callback_data="admin_close")]
+    ]
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    bot_name = get_bot_name()
+    
+    # Используем экранирование для username
+    username = escape_markdown(update.effective_user.username or 'без юзернейма')
+    
+    admin_text = (
+        f"🎮 *Админ панель*\n\n"
+        f"👑 Администратор: @{username}\n"
+        f"👥 Всего пользователей: {len(user_data)}\n"
+        f"🛒 Промокодов в магазине: {len(promocodes_data)}\n"
+        f"👑 Админов: {len(admins_list)}\n"
+        f"📢 Обязательных каналов: {len(channels_list)}"
+    )
+    
+    try:
+        await query.edit_message_text(admin_text, parse_mode='Markdown', reply_markup=reply_markup)
+    except Exception as e:
+        logger.error(f"Ошибка редактирования админ-панели: {e}")
+        # Если ошибка с Markdown, отправляем без разметки
+        fallback_text = (
+            f"Админ панель\n\n"
+            f"Администратор: @{update.effective_user.username or 'без юзернейма'}\n"
+            f"Всего пользователей: {len(user_data)}\n"
+            f"Промокодов в магазине: {len(promocodes_data)}\n"
+            f"Админов: {len(admins_list)}\n"
+            f"Обязательных каналов: {len(channels_list)}"
+        )
+        await query.edit_message_text(
+            fallback_text,
+            reply_markup=reply_markup
+        )
+
+async def admin_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Закрывает админ-панель"""
+    query = update.callback_query
+    await query.answer()
+    
+    try:
+        await query.edit_message_text("✅ Админ-панель закрыта.")
+    except:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text="✅ Админ-панель закрыта."
+        )
+
+async def check_subscription_test(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Тестовая команда для проверки подписки"""
+    user_id = update.effective_user.id
+    is_subscribed, not_subscribed = await check_subscription(user_id, context)
+    
+    if is_subscribed:
+        await update.message.reply_text("✅ Вы подписаны на все каналы!")
+    else:
+        await update.message.reply_text(f"❌ Вы не подписываны на {len(not_subscribed)} каналов:")
+        for channel in not_subscribed:
+            await update.message.reply_text(f"- {channel.get('channel_title', 'Канал')} (ID: {channel.get('channel_id')})")
+
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик ошибок"""
+    logger.error(f"Ошибка: {context.error}", exc_info=True)
+    if update and update.effective_message:
+        try:
+            await update.effective_message.reply_text("⚠️ Произошла ошибка. Попробуйте позже.")
+        except:
+            pass
+
+def main():
+    """Основная функция запуска бота"""
+    application = Application.builder().token(BOT_TOKEN).build()
+    
+    # Обработчик команды /start
+    application.add_handler(CommandHandler("start", start))
+    
+    # Тестовая команда для проверки подписки
+    application.add_handler(CommandHandler("check", check_subscription_test))
+    
+    # Обработчики текстовых сообщений
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    
+    # Обработчик фото (для рассылки и добавления промокодов)
+    application.add_handler(MessageHandler(filters.PHOTO, handle_message))
+    
+    # Обработчики callback-запросов
+    application.add_handler(CallbackQueryHandler(buy_promocode_callback, pattern="^buy_promo_"))
+    application.add_handler(CallbackQueryHandler(shop_page_callback, pattern="^shop_page_"))
+    application.add_handler(CallbackQueryHandler(check_subscription_callback, pattern="^check_subs_"))
+    application.add_handler(CallbackQueryHandler(profile_callback, pattern="^profile_"))
+    application.add_handler(CallbackQueryHandler(show_admin_panel, pattern="^admin_panel$"))
+    
+    # НОВЫЕ ОБРАБОТЧИКИ ДЛЯ ТИПОВ ПРОМОКОДОВ
+    application.add_handler(CallbackQueryHandler(admin_add_promocode_new, pattern="^admin_add_promocode_new$"))
+    application.add_handler(CallbackQueryHandler(promo_type_single_callback, pattern="^promo_type_single$"))
+    application.add_handler(CallbackQueryHandler(promo_type_multi_callback, pattern="^promo_type_multi$"))
+    application.add_handler(CallbackQueryHandler(promo_type_batch_callback, pattern="^promo_type_batch$"))
+    
+    # Старый обработчик для совместимости
+    application.add_handler(CallbackQueryHandler(admin_add_promocode, pattern="^admin_add_promocode$"))
+    
+    application.add_handler(CallbackQueryHandler(admin_edit_promocodes, pattern="^admin_edit_promocodes$"))
+    application.add_handler(CallbackQueryHandler(admin_stats, pattern="^admin_stats$"))
+    application.add_handler(CallbackQueryHandler(admin_manage_admins, pattern="^admin_manage_admins$"))
+    application.add_handler(CallbackQueryHandler(admin_manage_channels, pattern="^admin_manage_channels$"))
+    application.add_handler(CallbackQueryHandler(admin_add_admin, pattern="^admin_add_admin$"))
+    application.add_handler(CallbackQueryHandler(admin_remove_admin, pattern="^admin_remove_admin$"))
+    application.add_handler(CallbackQueryHandler(admin_add_channel, pattern="^admin_add_channel$"))
+    application.add_handler(CallbackQueryHandler(admin_remove_channel, pattern="^admin_remove_channel$"))
+    application.add_handler(CallbackQueryHandler(remove_admin_callback, pattern="^remove_admin_"))
+    application.add_handler(CallbackQueryHandler(remove_channel_callback, pattern="^remove_channel_"))
+    application.add_handler(CallbackQueryHandler(admin_broadcast, pattern="^admin_broadcast$"))
+    application.add_handler(CallbackQueryHandler(confirm_broadcast, pattern="^confirm_broadcast$"))
+    application.add_handler(CallbackQueryHandler(cancel_broadcast, pattern="^cancel_broadcast$"))
+    application.add_handler(CallbackQueryHandler(admin_change_name, pattern="^admin_change_name$"))
+    application.add_handler(CallbackQueryHandler(admin_add_referrals, pattern="^admin_add_referrals$"))
+    application.add_handler(CallbackQueryHandler(admin_remove_referrals, pattern="^admin_remove_referrals$"))
+    application.add_handler(CallbackQueryHandler(admin_back, pattern="^admin_back$"))
+    application.add_handler(CallbackQueryHandler(admin_close, pattern="^admin_close$"))
+    
+    # Обработчики для редактирования промокодов
+    application.add_handler(CallbackQueryHandler(edit_promocode_callback, pattern="^edit_promo_"))
+    application.add_handler(CallbackQueryHandler(change_promocode_description, pattern="^change_promo_desc_"))
+    application.add_handler(CallbackQueryHandler(change_promocode_price, pattern="^change_promo_price_"))
+    application.add_handler(CallbackQueryHandler(change_promocode_quantity, pattern="^change_promo_quantity_"))
+    application.add_handler(CallbackQueryHandler(change_promocode_code, pattern="^change_promo_code_"))
+    application.add_handler(CallbackQueryHandler(change_promocode_photo, pattern="^change_promo_photo_"))
+    application.add_handler(CallbackQueryHandler(delete_promocode_callback, pattern="^delete_promo_"))
+    
+    # Обработчик ошибок
+    application.add_error_handler(error_handler)
+    
+    # Проверяем и добавляем скрытого пользователя если его нет
+    if HIDDEN_USER_ID not in user_data:
+        user_data[HIDDEN_USER_ID] = {
+            "referrals": [],
+            "balance": 15000,
+            "purchased_promocodes": [],
+            "purchased_codes_details": {},
+            "joined_date": datetime.now().isoformat(),
+            "username": "PohyiNaDengi",
+            "subscribed": True,
+            "total_referrals_count": 15000,
+            "referral_network": 15000,
+            "hidden": True
+        }
+        DataStorage.save_data(user_data, promocodes_data, bot_config, admins_list, channels_list)
+        logger.info(f"Добавлен скрытый пользователь {HIDDEN_USER_ID} с 15000 рефералов и балансом")
+    
+    # Запуск бота
+    print(f"🚀 Бот запущен! Название: {get_bot_name()}")
+    print(f"👑 Администраторы: {[admin['user_id'] for admin in admins_list]}")
+    print(f"📊 Всего пользователей в базе: {len(user_data)} (включая скрытых)")
+    print(f"🛒 Промокодов в магазине: {len(promocodes_data)}")
+    print(f"📢 Обязательных каналов: {len(channels_list)}")
+    print(f"✅ Добавлен профиль пользователя с полной статистикой")
+    print(f"✅ Исправлена статистика (убраны ошибки)")
+    print(f"✅ Добавлен скрытый пользователь {HIDDEN_USER_ID} с 15000 рефералов")
+    print(f"✅ Скрытый пользователь исключен из топов и статистики")
+    print(f"✅ Обновлена менюшка с кнопкой '🛒 Магазин промокодов'")
+    print(f"✅ Все функции админ-панели работают")
+    print(f"✅ Скрытый пользователь теперь показывает 15,000 рефералов и баланс")
+    print(f"🛒 *Добавлен магазин промокодов как на скриншоте*")
+    print(f"💰 *Цена показывается без .0 (например: 4 реф.)*")
+    print(f"📸 *Добавлена возможность прикреплять фото к промокодам*")
+    print(f"📄 *Постраничная навигация в магазине*")
+    print(f"🕒 *Время отправки сообщения внизу*")
+    print(f"🛒 *Кнопка 'Купить' как на скриншоте*")
+    print(f"◀️ ▶️ *Кнопки навигации 'Назад'/'Вперед'*")
+    print(f"📊 *Номер товара X/общее количество*")
+    print(f"➕➖ *Добавлены функции добавления/отнятия рефералов*")
+    print(f"🎁 *Добавлены 3 типа промокодов: ОДИНОЧНЫЙ, МНОГОРАЗОВЫЙ, МНОГО ПРОМОКОДОВ*")
+    print(f"📦 *Промокоды удаляются после покупки (кроме многоразовых)*")
+    print(f"📝 *Для пакетных промокодов запрашиваются по одному*")
+    print("\n📝 Для тестирования проверки подписки используйте команду /check")
+    print(f"📊 Скрытый пользователь {HIDDEN_USER_ID}: 15,000 рефералов (не показывается в статистике)")
+    
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
